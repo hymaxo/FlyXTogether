@@ -1,0 +1,11 @@
+/target
+/dist
+*.pdb
+.DS_Store
+# Installed by scripts/fetch-xplane-sdk.sh (macOS only)
+/third_party/xplane-sdk/Libraries/Mac/
+
+# Local tooling and planning notes (not part of the published source)
+/.agents/
+/.claude/
+/openspec/

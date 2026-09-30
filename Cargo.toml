@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/flyx-protocol",
+    "crates/flyx-sync",
+    "crates/flyx-net",
+    "crates/flyx-xplm",
+    "crates/flyx-plugin",
+    "tools/flyx-peer",
+]
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/hymaxo/FlyXTogether"
+
+[workspace.dependencies]
+flyx-protocol = { path = "crates/flyx-protocol" }
+flyx-sync = { path = "crates/flyx-sync" }
+flyx-net = { path = "crates/flyx-net" }
+flyx-xplm = { path = "crates/flyx-xplm" }
+
+[profile.release]
+# Panics must unwind so the plugin's FFI guard can catch them.
+panic = "unwind"
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+
+# Key derivation is deliberately expensive; keep it fast in debug builds so
+# tests and development plugins do not stall.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

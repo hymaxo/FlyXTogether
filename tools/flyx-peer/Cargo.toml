@@ -1,0 +1,16 @@
+[package]
+name = "flyx-peer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+flyx-net.workspace = true
+flyx-protocol.workspace = true
+flyx-sync.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }

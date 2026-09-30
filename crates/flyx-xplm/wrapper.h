@@ -1,0 +1,12 @@
+/* Input for scripts/gen-bindings.sh. */
+#include "XPLMDefs.h"
+#include "XPLMCamera.h"
+#include "XPLMDataAccess.h"
+#include "XPLMDisplay.h"
+#include "XPLMGraphics.h"
+#include "XPLMMenus.h"
+#include "XPLMPlanes.h"
+#include "XPLMPlugin.h"
+#include "XPLMProcessing.h"
+#include "XPLMScenery.h"
+#include "XPLMUtilities.h"

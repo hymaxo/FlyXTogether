@@ -1,0 +1,10 @@
+[package]
+name = "flyx-xplm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+imgui = "0.12"
+tracing = "0.1"

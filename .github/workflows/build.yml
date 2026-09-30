@@ -1,0 +1,258 @@
+name: build
+
+# Every push and pull request is built and tested.
+# - A push to main also publishes the "nightly" pre-release.
+# - A pushed tag vX.Y.Z[-pre] publishes that release. The tag must match the
+#   workspace version in Cargo.toml.
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build_version: ${{ steps.meta.outputs.build_version }}
+      channel: ${{ steps.meta.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          sha=$(git rev-parse --short=7 HEAD)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match the Cargo.toml version $version"
+              exit 1
+            fi
+            channel=release
+            build_version=$version
+          elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+            channel=nightly
+            build_version="$version+nightly.$sha"
+          else
+            channel=ci
+            build_version="$version+dev.$sha"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_version=$build_version" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "FlyXTogether $build_version ($channel)"
+
+  build:
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win_x64
+          - os: ubuntu-22.04
+            platform: lin_x64
+          - os: macos-latest
+            platform: mac_x64
+    runs-on: ${{ matrix.os }}
+    env:
+      # Shown in the plugin window and log; releases use the plain version.
+      FLYX_VERSION: ${{ needs.meta.outputs.channel != 'release' && needs.meta.outputs.build_version || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustup picks up rust-toolchain.toml automatically.
+      - name: Install Rust targets (macOS universal)
+        if: runner.os == 'macOS'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install GL headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgl-dev
+
+      - name: Fetch X-Plane SDK frameworks
+        if: runner.os == 'macOS'
+        run: bash scripts/fetch-xplane-sdk.sh
+
+      - name: Test
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            # On macOS, binaries linking XPLM.framework cannot start outside
+            # X-Plane (the framework needs X-Plane's FMOD library). Their
+            # tests are platform-independent and run on Windows and Linux;
+            # here they are only compiled.
+            cargo test --workspace --locked --exclude flyx-xplm --exclude flyx-plugin
+            cargo test --locked -p flyx-xplm -p flyx-plugin --no-run
+          else
+            cargo test --workspace --locked
+          fi
+
+      - name: Build plugin (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build -p flyx-plugin --release --locked
+          mkdir -p out
+          cp target/release/FlyXTogether.dll out/FlyXTogether.xpl
+
+      - name: Build plugin (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build -p flyx-plugin --release --locked
+          mkdir -p out
+          cp target/release/libFlyXTogether.so out/FlyXTogether.xpl
+
+      - name: Build plugin (macOS universal)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build -p flyx-plugin --release --locked --target aarch64-apple-darwin
+          cargo build -p flyx-plugin --release --locked --target x86_64-apple-darwin
+          mkdir -p out
+          lipo -create \
+            target/aarch64-apple-darwin/release/libFlyXTogether.dylib \
+            target/x86_64-apple-darwin/release/libFlyXTogether.dylib \
+            -output out/FlyXTogether.xpl
+          lipo -info out/FlyXTogether.xpl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-${{ matrix.platform }}
+          path: out/FlyXTogether.xpl
+          if-no-files-found: error
+
+  package:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    outputs:
+      zip: ${{ steps.zip.outputs.zip }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble plugin folder
+        run: |
+          d=dist/FlyXTogether
+          for p in win_x64 lin_x64 mac_x64; do
+            mkdir -p $d/$p
+            cp artifacts/plugin-$p/FlyXTogether.xpl $d/$p/
+          done
+          cp README.md LICENSE-MIT LICENSE-APACHE $d/
+          cp docs/hosting.md $d/HOSTING.md
+          echo "${{ needs.meta.outputs.build_version }}" > $d/VERSION.txt
+          find dist -type f
+      - id: zip
+        name: Zip
+        run: |
+          if [ "${{ needs.meta.outputs.channel }}" = release ]; then
+            zip=FlyXTogether-${{ needs.meta.outputs.version }}.zip
+          else
+            zip=FlyXTogether-nightly.zip
+          fi
+          (cd dist && zip -r -9 "../$zip" FlyXTogether)
+          sha256sum "$zip" > "$zip.sha256"
+          cat "$zip.sha256"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlyXTogether
+          path: |
+            ${{ steps.zip.outputs.zip }}
+            ${{ steps.zip.outputs.zip }}.sha256
+          if-no-files-found: error
+
+  release:
+    needs: [meta, package]
+    if: needs.meta.outputs.channel == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: FlyXTogether
+      - name: Release notes from CHANGELOG.md
+        run: |
+          # The section between "## <version>" and the next "## " heading.
+          awk -v v="$VERSION" '
+            $0 ~ "^## " { if (found) exit; if (index($0, "## " v) == 1) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for $VERSION"
+            exit 1
+          fi
+          cat notes.md
+      - name: Publish release
+        run: |
+          flags=()
+          case "$VERSION" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "v$VERSION" \
+            "FlyXTogether-$VERSION.zip" "FlyXTogether-$VERSION.zip.sha256" \
+            --title "FlyXTogether $VERSION" --notes-file notes.md --verify-tag "${flags[@]}"
+
+  nightly:
+    needs: [meta, package]
+    if: needs.meta.outputs.channel == 'nightly'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: nightly
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUILD_VERSION: ${{ needs.meta.outputs.build_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: FlyXTogether
+      - name: Move the nightly tag to this commit
+        run: |
+          git tag -f nightly "$GITHUB_SHA"
+          git push -f origin refs/tags/nightly
+      - name: Publish nightly pre-release
+        run: |
+          cat > notes.md <<EOF
+          Automatic build of the latest commit on \`main\`
+          ([\`${GITHUB_SHA::7}\`](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)),
+          version \`$BUILD_VERSION\`, built $(date -u '+%Y-%m-%d %H:%M UTC').
+
+          > [!WARNING]
+          > Nightly builds are untested and may break at any time. For normal
+          > flying use the latest release instead. Both pilots need the same
+          > build to fly together.
+
+          Install it like a release: unzip \`FlyXTogether-nightly.zip\` into
+          \`X-Plane 12/Resources/plugins/\`, replacing any older FlyXTogether folder.
+          EOF
+          if gh release view nightly > /dev/null 2>&1; then
+            gh release upload nightly FlyXTogether-nightly.zip FlyXTogether-nightly.zip.sha256 --clobber
+            gh release edit nightly --title "Nightly build ($BUILD_VERSION)" --notes-file notes.md \
+              --prerelease --latest=false
+          else
+            gh release create nightly FlyXTogether-nightly.zip FlyXTogether-nightly.zip.sha256 \
+              --title "Nightly build ($BUILD_VERSION)" --notes-file notes.md \
+              --prerelease --latest=false --verify-tag
+          fi

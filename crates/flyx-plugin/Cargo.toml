@@ -1,0 +1,25 @@
+[package]
+name = "flyx-plugin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "FlyXTogether"
+crate-type = ["cdylib"]
+
+[dependencies]
+flyx-net.workspace = true
+flyx-protocol.workspace = true
+flyx-sync.workspace = true
+flyx-xplm.workspace = true
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "net", "macros"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry", "std"] }
+
+[features]
+# Developer-only menu items (e.g. "Trigger test panic"). Never in release zips.
+dev = []
