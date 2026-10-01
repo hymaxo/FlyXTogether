@@ -16,10 +16,11 @@ No accounts, no servers, no subscriptions.
 </div>
 
 ```
-   🧑‍✈️ Captain (host)                          👩‍✈️ Crew (joins)
+   🧑‍✈️ Pilot flying (PF)                       👩‍✈️ Pilot monitoring (PM)
   ┌──────────────────┐     your internet     ┌──────────────────┐
-  │  X-Plane 12      │ ───────────────────▶  │  X-Plane 12      │
-  │  flies the plane │   encrypted, direct   │  rides along     │
+  │  X-Plane 12      │ ◀───────────────────▶ │  X-Plane 12      │
+  │  flies the plane │   encrypted, direct   │  same cockpit,   │
+  │                  │                       │  "I have control"│
   └──────────────────┘                       └──────────────────┘
 ```
 
@@ -31,9 +32,21 @@ No accounts, no servers, no subscriptions.
 
 ## 🛩️ What works today
 
-- **Cessna 172 SP**: the default one, including the **G1000** and **Seaplane** variants.
-- **Host flies, crew rides along.** The crew's aircraft follows the host's exactly:
-  position, attitude, control surfaces, flaps, nosewheel steering and propeller.
+- **Any aircraft, worked out automatically.** FlyXTogether reads the aircraft's
+  own cockpit files to find what to sync, so there is nothing to configure.
+  The **Cessna 172 SP** (standard, **G1000** and **Seaplane**) is verified;
+  other aircraft are marked *untested* in the window but often work fine
+  (we flew the Citation X for fun).
+- **Shared cockpit.** Switches, knobs, radios, autopilot settings, fuel and
+  magnetos sync both ways. Buttons and held commands (like the starter) run
+  on both seats.
+- **Take controls.** Either pilot can say "my controls" with the
+  **Take controls** button, the Plugins menu or a key binding. The aircraft
+  carries on without a jump.
+- **Live instruments for the PM.** The pilot monitoring's X-Plane keeps
+  simulating, so every gauge, the engines, the electrics and the avionics
+  work on their own, and the PF's yoke, throttle and trim move in front of
+  you.
 - **Smooth over real internet connections.** A playout buffer hides jitter and
   lost packets, so the ride looks fluid, not teleporty.
 - **Direct and private.** Password-protected sessions, encrypted end to end
@@ -43,9 +56,11 @@ No accounts, no servers, no subscriptions.
 
 ## 🚧 Not yet (coming later)
 
-- Crew taking the controls / handing over control
-- Cockpit sync (switches, radios, instruments)
-- SmartCopilot profile import, and more aircraft (ToLiss A321 is next)
+- Joining in mid-flight: it connects, but aircraft whose switches live in
+  their own scripts (like the Citation X) can start out of step. Join on the
+  ground for now.
+- Flight plans (FMS/GPS) shared between the seats
+- SmartCopilot profile import, and verified profiles for more aircraft
 - Joining without port forwarding (relay or NAT traversal)
 - Tested on macOS, Linux and VR. The builds are there, but nobody has flown
   them yet. Reports welcome!
@@ -59,7 +74,8 @@ No accounts, no servers, no subscriptions.
    (plus `mac_x64/` and `lin_x64/`).
 3. Start X-Plane. You'll find it under **Plugins → FlyXTogether**.
 
-Both pilots need the **same FlyXTogether version** and the **same aircraft**.
+Both pilots need the **same FlyXTogether version** and the **same aircraft**
+(0.2 cannot connect to 0.1).
 
 <details>
 <summary>🍎 macOS: allow the unsigned plugin</summary>
@@ -87,16 +103,21 @@ the same build.
 
 **Captain (host):**
 
-1. Load the Cessna 172 SP.
+1. Load the Cessna 172 SP (or any aircraft, on the ground).
 2. **Plugins → FlyXTogether → Open**, **Host** tab, pick a password, press **Host**.
 3. Forward UDP port **49700** on your router to your computer.
 4. Send your crew your public IP address and the password.
 
 **Crew (join):**
 
-1. Load the same Cessna 172 SP variant.
-2. **Plugins → FlyXTogether → Open**, **Join** tab, enter the address and password, press **Join**.
-3. Sit back and enjoy the view. **Leave session** gives you your own plane back.
+1. Load the same aircraft and variant.
+2. **Plugins → FlyXTogether → Open**, **Join** tab, paste the address, enter the password, press **Join**.
+3. The host starts as pilot flying. Work the radios, run the checklist, and
+   press **Take controls** whenever it's your leg. **Leave session** gives you
+   your own plane back.
+
+Your joystick and throttle only fly while you are the PF. Want to adjust what
+gets synced for an aircraft? See **[aircraft profiles](docs/profiles.md)**.
 
 Port forwarding, carrier-grade NAT, Tailscale/ZeroTier, and what every message
 in the window means are covered in the **[hosting guide](docs/hosting.md)**.
@@ -153,7 +174,7 @@ libclang's folder on `PATH` and in `LIBCLANG_PATH`).
 | Path | Contents |
 |---|---|
 | `crates/flyx-protocol` | network message types |
-| `crates/flyx-sync` | session state machine and flight-state playout (no X-Plane needed) |
+| `crates/flyx-sync` | session state machine, handover, cockpit register, sync definitions and flight-state playout (no X-Plane needed) |
 | `crates/flyx-net` | QUIC transport and password handshake |
 | `crates/flyx-xplm` | safe Rust wrappers over the X-Plane SDK |
 | `crates/flyx-plugin` | the plugin itself |
