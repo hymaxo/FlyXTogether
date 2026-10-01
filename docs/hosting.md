@@ -9,7 +9,7 @@ Both pilots need the same aircraft loaded, in the same version. Any aircraft
 can be used: FlyXTogether works out what to sync from the aircraft's own
 cockpit files. The default Cessna 172 SP (standard, G1000 and seaplane) is
 verified; other aircraft work but are untested, so some of their systems may
-not sync. Variants of an aircraft count as different aircraft.
+not sync (the window then says "Untested aircraft: some systems may not sync."). Variants of an aircraft count as different aircraft.
 
 ## Hosting
 

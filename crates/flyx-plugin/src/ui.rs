@@ -4,7 +4,7 @@
 //! for as [`UiAction`]s; the plugin drains those each frame.
 
 use flyx_sync::Password;
-use flyx_sync::session::{Notice, Role, State};
+use flyx_sync::session::{Notice, State};
 use flyx_xplm::imgui::{Condition, StyleColor, Ui, WindowFlags};
 
 /// Initial window size in boxels.
@@ -16,12 +16,8 @@ const BLUE: [f32; 4] = [0.45, 0.70, 1.00, 1.0];
 const GREEN: [f32; 4] = [0.40, 0.90, 0.45, 1.0];
 const RED: [f32; 4] = [1.00, 0.40, 0.35, 1.0];
 
-fn describe(role: Role) -> &'static str {
-    match role {
-        Role::Authority => "authority (flies the aircraft)",
-        Role::Follower => "follower (rides along)",
-    }
-}
+/// Shown while an aircraft no profile verifies is loaded.
+pub const UNTESTED_AIRCRAFT: &str = "Untested aircraft: some systems may not sync.";
 
 /// What the user asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +34,8 @@ pub enum UiAction {
     },
     /// Leave the session, cancel a join, or stop hosting.
     Leave,
+    /// Take the flight controls.
+    TakeControls,
 }
 
 /// Editable form fields. The passwords live only in memory.
@@ -58,6 +56,11 @@ pub struct UiModel {
     pub failure: Option<String>,
     pub log_path: String,
     pub form: Form,
+    /// "You have the controls" or "<name> has the controls", while connected.
+    pub controls_line: Option<String>,
+    pub can_take_controls: bool,
+    /// The loaded aircraft is not verified by a profile.
+    pub untested_aircraft: bool,
     actions: Vec<UiAction>,
     #[cfg(feature = "dev")]
     pub show_demo: bool,
@@ -74,6 +77,9 @@ impl UiModel {
             failure: None,
             log_path,
             form: Form::default(),
+            controls_line: None,
+            can_take_controls: false,
+            untested_aircraft: false,
             actions: Vec::new(),
             #[cfg(feature = "dev")]
             show_demo: false,
@@ -128,6 +134,9 @@ impl UiModel {
         }
 
         self.draw_status(ui);
+        if self.untested_aircraft {
+            ui.text_colored(AMBER, UNTESTED_AIRCRAFT);
+        }
         if let Some(notice) = &self.notice {
             match notice {
                 Notice::Info(text) => ui.text_wrapped(text),
@@ -169,11 +178,15 @@ impl UiModel {
                     }
                     ui.spacing();
                 }
+                if crew.is_some() {
+                    self.draw_take_controls(ui);
+                }
                 if ui.button("Stop hosting") {
                     self.actions.push(UiAction::Leave);
                 }
             }
             State::Joined { .. } => {
+                self.draw_take_controls(ui);
                 if ui.button("Leave session") {
                     self.actions.push(UiAction::Leave);
                 }
@@ -187,7 +200,22 @@ impl UiModel {
         }
     }
 
+    fn draw_take_controls(&mut self, ui: &Ui) {
+        let can = self.can_take_controls;
+        ui.disabled(!can, || {
+            if ui.button("Take controls") {
+                self.actions.push(UiAction::TakeControls);
+            }
+        });
+        ui.same_line();
+    }
+
     fn draw_status(&self, ui: &Ui) {
+        let controls = || {
+            if let Some(line) = &self.controls_line {
+                ui.text_colored(BLUE, line);
+            }
+        };
         match &self.state {
             State::Idle => ui.text_colored(GREY, "Not connected"),
             State::StartingHost { port } => {
@@ -198,7 +226,6 @@ impl UiModel {
             } => {
                 ui.text_colored(AMBER, "Hosting - waiting for crew");
                 ui.text(format!("Port {port} (UDP)"));
-                ui.text(format!("You: {}", describe(Role::Authority)));
             }
             State::Hosting {
                 port,
@@ -206,8 +233,8 @@ impl UiModel {
                 ..
             } => {
                 ui.text_colored(GREEN, "Connected");
-                ui.text(format!("You: {}", describe(Role::Authority)));
-                ui.text(format!("Crew: {name}, {}", describe(Role::Follower)));
+                ui.text(format!("Crew: {name}"));
+                controls();
                 ui.text_disabled(format!("Hosting on port {port} (UDP)"));
             }
             State::Joining { address } => {
@@ -215,8 +242,8 @@ impl UiModel {
             }
             State::Joined { host, address } => {
                 ui.text_colored(GREEN, "Connected");
-                ui.text(format!("You: {}", describe(Role::Follower)));
-                ui.text(format!("Crew: {host}, {}", describe(Role::Authority)));
+                ui.text(format!("Host: {host}"));
+                controls();
                 ui.text_disabled(format!("Host address: {address}"));
             }
         }
@@ -330,6 +357,13 @@ mod tests {
             };
             assert!(doc.contains(&text), "docs/hosting.md is missing: {text}");
         }
+    }
+
+    /// The untested-aircraft line is quoted in the hosting doc.
+    #[test]
+    fn hosting_doc_mentions_untested_aircraft() {
+        let doc = include_str!("../../../docs/hosting.md");
+        assert!(doc.contains(UNTESTED_AIRCRAFT));
     }
 
     #[test]

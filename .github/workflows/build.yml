@@ -153,6 +153,8 @@ jobs:
             mkdir -p $d/$p
             cp artifacts/plugin-$p/FlyXTogether.xpl $d/$p/
           done
+          mkdir -p $d/profiles
+          cp profiles/*.toml $d/profiles/
           cp README.md LICENSE-MIT LICENSE-APACHE $d/
           cp docs/hosting.md $d/HOSTING.md
           echo "${{ needs.meta.outputs.build_version }}" > $d/VERSION.txt

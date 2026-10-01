@@ -48,4 +48,7 @@ install_file "$root/target/$profile/$lib" "$dest/FlyXTogether.xpl"
 if [ "$platform" = win_x64 ] && [ -f "$root/target/$profile/FlyXTogether.pdb" ]; then
   install_file "$root/target/$profile/FlyXTogether.pdb" "$dest/FlyXTogether.pdb"
 fi
-echo "installed $profile build to $dest/FlyXTogether.xpl"
+# Aircraft profiles ship next to the platform folders.
+mkdir -p "$XPLANE_ROOT/Resources/plugins/FlyXTogether/profiles"
+cp "$root"/profiles/*.toml "$XPLANE_ROOT/Resources/plugins/FlyXTogether/profiles/"
+echo "installed $profile build to $dest/FlyXTogether.xpl, profiles to FlyXTogether/profiles"

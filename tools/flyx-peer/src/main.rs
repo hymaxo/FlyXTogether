@@ -51,6 +51,16 @@ struct Cli {
     /// `<seconds>:hold <command> <seconds>` or `<seconds>:take`.
     #[arg(long = "at", global = true)]
     script: Vec<String>,
+    /// Cockpit values set before connecting, `<dataref[i]>=<value>`; a
+    /// hosting peer sends them in the join snapshot.
+    #[arg(long, global = true)]
+    preset: Vec<String>,
+    /// Fly the trajectory as an aircraft with this many running engines.
+    #[arg(long, global = true, default_value_t = 1)]
+    running_engines: usize,
+    /// Retract the gear while airborne.
+    #[arg(long, global = true)]
+    retractable: bool,
     /// Shortcut for `--at <seconds>:take`.
     #[arg(long, global = true)]
     take_controls_after: Option<f64>,
@@ -149,7 +159,15 @@ async fn run(cli: Cli) {
 
     let (aircraft, cockpit) = match &cli.aircraft {
         Some(path) => match Cockpit::load(path, cli.engines, &cli.profiles) {
-            Ok(c) => (c.aircraft.clone(), Some(c)),
+            Ok(mut c) => {
+                for preset in &cli.preset {
+                    if let Err(e) = c.preset(preset) {
+                        warn!("bad --preset {preset:?}: {e}");
+                        return;
+                    }
+                }
+                (c.aircraft.clone(), Some(c))
+            }
             Err(e) => {
                 warn!("{e}");
                 return;
@@ -221,6 +239,8 @@ async fn run(cli: Cli) {
         script,
         connected_at: None,
         is_host,
+        running_engines: cli.running_engines.clamp(1, flyx_protocol::MAX_ENGINES),
+        retractable: cli.retractable,
     };
     peer.handle(request);
     peer.run(flight.rate, deadline, end).await;
@@ -243,6 +263,8 @@ struct Peer {
     script: Vec<ScriptStep>,
     connected_at: Option<Instant>,
     is_host: bool,
+    running_engines: usize,
+    retractable: bool,
 }
 
 impl Peer {
@@ -342,6 +364,24 @@ impl Peer {
         }
     }
 
+    /// The synthetic flight at `now`, as this aircraft would report it.
+    fn flight_state(&self, epoch: u32, now: f64) -> FlightState {
+        let mut state = self.trajectory.state_at(now, self.seq);
+        state.epoch = epoch;
+        let v = state.visuals;
+        for i in 1..self.running_engines {
+            state.visuals.engine_running[i] = v.engine_running[0];
+            state.visuals.prop_speed_rad_s[i] = v.prop_speed_rad_s[0];
+        }
+        if self.retractable && !state.on_ground {
+            state.visuals.gear_deploy = [0.0; flyx_protocol::MAX_GEAR];
+        }
+        if let Some(c) = &self.cockpit {
+            state.controls = c.controls(&state);
+        }
+        state
+    }
+
     fn leave_reason(&self) -> Option<ByeReason> {
         Some(if self.is_host {
             ByeReason::StoppedHosting
@@ -420,12 +460,13 @@ impl Peer {
                 return Some(Some(ByeReason::StoppedHosting));
             }
         }
+        let flight = self
+            .streaming
+            .map(|epoch| (epoch, self.flight_state(epoch, now)));
         if let Some(c) = &mut self.cockpit {
-            c.frame(frame, now, self.streaming, &self.net);
+            c.frame(frame, now, flight, &self.net);
         }
-        if let Some(epoch) = self.streaming {
-            let mut state = self.trajectory.state_at(now, self.seq);
-            state.epoch = epoch;
+        if let Some((_, state)) = flight {
             self.seq = self.seq.wrapping_add(1);
             self.net.send(NetCommand::SendFlightState(state));
         }

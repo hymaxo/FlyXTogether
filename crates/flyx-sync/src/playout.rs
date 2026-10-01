@@ -20,6 +20,19 @@ pub const MAX_DELAY: f64 = 0.150;
 pub const MAX_EXTRAPOLATION: f64 = 0.5;
 /// How long a recovery blend takes.
 pub const BLEND_TIME: f64 = 0.25;
+/// After a handover, how long the blend from this seat's own last pose
+/// takes.
+pub const HANDOVER_BLEND_TIME: f64 = 1.0;
+/// After a handover, the shortest time over which the lead decays.
+pub const HANDOVER_DECAY_MIN: f64 = 4.0;
+/// The lead decays slowly enough that the shown speed differs from the
+/// true speed by at most this fraction.
+pub const HANDOVER_MAX_SPEED_ERROR: f64 = 0.04;
+/// Largest lead measured after a handover, seconds.
+const HANDOVER_MAX_LEAD: f64 = 1.5;
+/// Below this ground speed no lead is measured (along-track lag is
+/// meaningless when parked).
+const HANDOVER_MIN_SPEED: f64 = 3.0;
 /// Window over which the clock offset minimum and jitter are taken.
 const CLOCK_WINDOW: f64 = 2.0;
 /// How fast the render delay may change, seconds per second.
@@ -49,10 +62,11 @@ struct Arrival {
     offset: f64,
 }
 
-/// An error term that fades out over [`BLEND_TIME`].
+/// An error term that fades out over `duration`.
 #[derive(Debug, Clone, Copy)]
 struct Blend {
     started_at: f64,
+    duration: f64,
     /// Position error east/north/up, metres.
     position: [f64; 3],
     /// Attitude error: `output = error * target`.
@@ -73,6 +87,27 @@ pub struct Playout {
     last_now: Option<f64>,
     /// Only samples of this control epoch are accepted, when set.
     epoch: Option<u32>,
+    /// This seat flew until a handover: its own last pose, used for the
+    /// first output.
+    handover_from: Option<FlightState>,
+    /// Local time of the first output after a handover.
+    handover_started: Option<f64>,
+    /// The stream is shown ahead by `lead` seconds, decaying to zero.
+    lead: Option<Lead>,
+}
+
+/// Lead after a handover (see [`Playout::after_handover`]).
+#[derive(Debug, Clone, Copy)]
+struct Lead {
+    initial: f64,
+    started_at: f64,
+    decay: f64,
+}
+
+impl Lead {
+    fn at(&self, now: f64) -> f64 {
+        self.initial * (1.0 - (now - self.started_at) / self.decay).max(0.0)
+    }
 }
 
 impl Default for Playout {
@@ -94,6 +129,24 @@ impl Playout {
             blend: None,
             last_now: None,
             epoch: None,
+            handover_from: None,
+            handover_started: None,
+            lead: None,
+        }
+    }
+
+    /// A playout buffer for a seat that flew until now and follows
+    /// `epoch` after a handover. The new pilot flying starts from the
+    /// state it was showing, which trails this seat's own aircraft by
+    /// the round trip and both playout delays. Instead of jumping back,
+    /// the stream is shown ahead by that measured lag, decaying to zero
+    /// slowly enough to change the shown speed by at most
+    /// [`HANDOVER_MAX_SPEED_ERROR`], and the first second blends from
+    /// `own`, this seat's last pose.
+    pub fn after_handover(epoch: u32, own: FlightState) -> Self {
+        Self {
+            handover_from: Some(own),
+            ..Self::for_epoch(epoch)
         }
     }
 
@@ -158,7 +211,13 @@ impl Playout {
             self.mode = Mode::Paused;
             return self.last_output;
         }
-        let newest = *self.samples.back()?;
+        let Some(&newest) = self.samples.back() else {
+            // After a handover, keep this seat's own aircraft moving by
+            // dead reckoning until the new pilot flying's samples arrive.
+            let own = self.handover_from?;
+            let started = *self.handover_started.get_or_insert(now);
+            return Some(extrapolate(&own, now - started));
+        };
         let offset = self
             .arrivals
             .iter()
@@ -171,6 +230,16 @@ impl Playout {
 
         self.update_delay(offset, dt);
         let render_time = now - offset - self.delay;
+        if let Some(own) = self.handover_from
+            && self
+                .samples
+                .front()
+                .is_some_and(|first| render_time < first.sim_time)
+        {
+            // The stream does not reach the render time yet.
+            let started = *self.handover_started.get_or_insert(now);
+            return Some(extrapolate(&own, now - started));
+        }
         while self.samples.len() > 2
             && self
                 .samples
@@ -200,6 +269,7 @@ impl Playout {
                 extrapolate(&from, (render_time - from.sim_time).min(MAX_EXTRAPOLATION));
             self.blend = Some(Blend {
                 started_at: now,
+                duration: BLEND_TIME,
                 position: enu(&target, &predicted),
                 attitude: attitude(&predicted).mul(attitude(&target).conjugate()),
             });
@@ -207,9 +277,10 @@ impl Playout {
         self.predicting_from = (mode != Mode::Interpolating).then_some(newest);
         self.mode = mode;
 
+        let target = self.lead_target(target, now);
         let output = match self.blend {
-            Some(blend) if now - blend.started_at < BLEND_TIME => {
-                let remaining = 1.0 - smoothstep((now - blend.started_at) / BLEND_TIME);
+            Some(blend) if now - blend.started_at < blend.duration => {
+                let remaining = 1.0 - smoothstep((now - blend.started_at) / blend.duration);
                 apply_blend(&target, &blend, remaining)
             }
             _ => {
@@ -219,6 +290,51 @@ impl Playout {
         };
         self.last_output = Some(output);
         Some(output)
+    }
+
+    /// Applies the handover lead to `target`; on the first output after a
+    /// handover, measures the lead and starts the blend from the own pose.
+    fn lead_target(&mut self, target: FlightState, now: f64) -> FlightState {
+        if let Some(own) = self.handover_from.take() {
+            let since = now - self.handover_started.unwrap_or(now);
+            let own = extrapolate(&own, since);
+            let v = velocity_enu(&target);
+            let speed2 = v[0] * v[0] + v[1] * v[1];
+            let initial = if speed2 >= HANDOVER_MIN_SPEED * HANDOVER_MIN_SPEED {
+                // Along-track time from the shown state to our own.
+                let d = enu(&target, &own);
+                ((d[0] * v[0] + d[1] * v[1]) / speed2).clamp(0.0, HANDOVER_MAX_LEAD)
+            } else {
+                0.0
+            };
+            if initial > 0.0 {
+                self.lead = Some(Lead {
+                    initial,
+                    started_at: now,
+                    decay: (initial / HANDOVER_MAX_SPEED_ERROR).max(HANDOVER_DECAY_MIN),
+                });
+            }
+            let led = self.apply_lead(target, now);
+            self.blend = Some(Blend {
+                started_at: now,
+                duration: HANDOVER_BLEND_TIME,
+                position: enu(&led, &own),
+                attitude: attitude(&own).mul(attitude(&led).conjugate()),
+            });
+            return led;
+        }
+        self.apply_lead(target, now)
+    }
+
+    fn apply_lead(&mut self, target: FlightState, now: f64) -> FlightState {
+        match self.lead {
+            Some(lead) if lead.at(now) > 0.0 => extrapolate(&target, lead.at(now)),
+            Some(_) => {
+                self.lead = None;
+                target
+            }
+            None => target,
+        }
     }
 
     /// Delay target: twice the jitter plus one sample interval, within
@@ -624,6 +740,73 @@ mod tests {
         // Skip the first 3 s while the delay settles.
         let start = frames.iter().position(|f| f.now >= 3.0).unwrap();
         &frames[start..]
+    }
+
+    /// Scenario: Handover in a steady climb (design D3). This seat flew
+    /// east at 40 m/s; the new pilot flying's stream trails it by 0.35 s.
+    #[test]
+    fn handover_is_continuous_and_keeps_the_speed() {
+        let speed = 40.0;
+        let lag = 0.35;
+        let latency = 0.05;
+        let handover_at = 10.0;
+        let base = FlightState {
+            latitude_deg: 47.0,
+            longitude_deg: 8.0,
+            elevation_m: 1000.0,
+            psi_deg: 90.0,
+            velocity: [speed as f32, 0.0, 0.0],
+            ..FlightState::default()
+        };
+        let at_x = |x: f64| move_by(&base, [x, 0.0, 0.0]);
+        let own = at_x(speed * handover_at);
+        let mut p = Playout::after_handover(1, own);
+
+        // The new pilot flying's simulator clock starts at 100 s.
+        let mut next_sample = 0;
+        let mut previous: Option<(f64, FlightState)> = None;
+        let mut window: Option<(f64, FlightState)> = None;
+        let mut max_step: f64 = 0.0;
+        let mut speeds = Vec::new();
+        let frames = (12.0 * FPS) as u32;
+        for frame in 0..frames {
+            let now = handover_at + frame as f64 / FPS;
+            // Deliver samples sent up to `now - latency`.
+            while handover_at + next_sample as f64 / RATE + latency <= now {
+                let sent = next_sample as f64 / RATE;
+                let mut s = at_x(speed * (handover_at + sent - lag));
+                s.epoch = 1;
+                s.seq = next_sample;
+                s.sim_time = 100.0 + sent;
+                p.push(s, handover_at + sent + latency);
+                next_sample += 1;
+            }
+            let out = p.sample(now).expect("always a pose after a handover");
+            if frame == 0 {
+                assert!(distance(&out, &own) < 0.01, "first pose is our own");
+            }
+            if let Some((_, prev)) = previous {
+                max_step = max_step.max(distance(&prev, &out));
+            }
+            previous = Some((now, out));
+            match window {
+                Some((t0, start)) if now - t0 >= 0.25 => {
+                    speeds.push(distance(&start, &out) / (now - t0));
+                    window = Some((now, out));
+                }
+                None => window = Some((now, out)),
+                _ => {}
+            }
+        }
+        // No jump: one frame never moves much more than a frame of flight.
+        assert!(max_step < 1.5 * speed / FPS, "largest step {max_step:.2} m");
+        // The shown speed stays within 5% of the real speed.
+        for (i, v) in speeds.iter().enumerate() {
+            assert!(
+                (v / speed - 1.0).abs() < 0.05,
+                "window {i}: {v:.1} m/s instead of {speed}"
+            );
+        }
     }
 
     // Scenario: Samples from the previous pilot flying.

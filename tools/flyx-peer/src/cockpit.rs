@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use flyx_net::{NetCommand, NetHandle};
-use flyx_protocol::{AircraftId, Control, Seat, Value};
+use flyx_protocol::{AircraftId, Control, FlightState, MAX_INPUTS, Seat, Value};
 use flyx_sync::aircraft;
 use flyx_sync::cockpit::{Action, Commands, HandlerPhase, Register, Repair};
 use flyx_sync::definition::{
@@ -278,7 +278,13 @@ impl Cockpit {
 
     /// One frame: notice local changes, send due messages, release held
     /// commands, and send systems state while pilot flying.
-    pub fn frame(&mut self, frame: u64, now: f64, streaming: Option<u32>, net: &NetHandle) {
+    pub fn frame(
+        &mut self,
+        frame: u64,
+        now: f64,
+        streaming: Option<(u32, FlightState)>,
+        net: &NetHandle,
+    ) {
         let Some(register) = &mut self.register else {
             return;
         };
@@ -300,7 +306,7 @@ impl Cockpit {
             self.send_command(key, HandlerPhase::End, net);
         }
 
-        if let Some(epoch) = streaming
+        if let Some((epoch, flight)) = streaming
             && now >= self.next_systems
             && let Some(register) = &self.register
         {
@@ -308,7 +314,7 @@ impl Cockpit {
             let repair = self.repair.next_chunk(&register.snapshot());
             net.send(NetCommand::SendSystems {
                 epoch,
-                state: vec![],
+                state: self.state_values(&flight),
                 repair,
             });
         }
@@ -358,6 +364,77 @@ impl Cockpit {
             }
             ScriptAction::Take => {}
         }
+    }
+
+    /// Sets a shared value before connecting, so the host's join snapshot
+    /// carries it.
+    pub fn preset(&mut self, text: &str) -> Result<(), String> {
+        let step = ScriptStep::parse(&format!("0:set {text}"))?;
+        let ScriptAction::Set { name, value } = step.action else {
+            unreachable!()
+        };
+        match self.keys.get(name.as_str()) {
+            Some(&key) if self.is_shared(key) => {
+                self.values.insert(key, value);
+                Ok(())
+            }
+            _ => Err(format!("{name} is not a shared value of this aircraft")),
+        }
+    }
+
+    /// Synthetic flight-control inputs matching `state`, in definition order.
+    pub fn controls(&self, state: &FlightState) -> [f32; MAX_INPUTS] {
+        let speed = state.velocity.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let throttle = if !state.on_ground {
+            0.8
+        } else if speed > 1.0 {
+            0.25
+        } else {
+            0.05
+        };
+        let mut out = [0.0; MAX_INPUTS];
+        let inputs = self.definition.of_class(Class::Input);
+        for (slot, (_, entry)) in out.iter_mut().zip(inputs) {
+            let name = entry.target.to_string();
+            *slot = if name.contains("yoke_roll_ratio") {
+                (state.phi_deg / 40.0).clamp(-1.0, 1.0)
+            } else if name.contains("yoke_pitch_ratio") {
+                (0.05 + state.theta_deg / 20.0).clamp(-1.0, 1.0)
+            } else if name.contains("throttle_ratio") {
+                throttle
+            } else {
+                0.0
+            };
+        }
+        out
+    }
+
+    /// Synthetic systems state matching `state`: engine gauges and fuel.
+    fn state_values(&self, state: &FlightState) -> Vec<(u16, Value)> {
+        self.definition
+            .of_class(Class::State)
+            .filter_map(|(key, entry)| {
+                let Target::Dataref(d) = &entry.target else {
+                    return None;
+                };
+                let engine = d
+                    .index
+                    .unwrap_or(0)
+                    .min(state.visuals.prop_speed_rad_s.len() - 1);
+                let running = state.visuals.engine_running[engine];
+                let value = match d.name.rsplit('/').next()? {
+                    "ENGN_tacrad" => state.visuals.prop_speed_rad_s[engine],
+                    "ENGN_EGT_c" if running => 650.0,
+                    "ENGN_CHT_c" if running => 180.0,
+                    "ENGN_oil_temp_c" if running => 85.0,
+                    "ENGN_oil_press_psi" if running => 60.0,
+                    "ENGN_FF_" if running => 0.011,
+                    "m_fuel" if d.index.is_some_and(|i| i < 2) => 60.0,
+                    _ => return None,
+                };
+                Some((key as u16, Value::Float(value)))
+            })
+            .collect()
     }
 
     /// Logs every known shared value, for comparing seats after a test.

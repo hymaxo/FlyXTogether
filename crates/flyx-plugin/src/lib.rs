@@ -1,6 +1,7 @@
 //! FlyXTogether X-Plane 12 plugin.
 #![allow(non_snake_case)] // the library must be named FlyXTogether for X-Plane
 
+mod cockpit;
 #[cfg(feature = "dev")]
 mod dev;
 #[cfg(feature = "dev")]

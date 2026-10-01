@@ -265,7 +265,14 @@ impl Authority {
         }
     }
 
-    pub fn frame(&mut self, refs: &Refs, dt: f32, net: &NetHandle) {
+    /// The control epoch this seat streams.
+    pub fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
+    /// Samples and sends at the send rate. `controls` are the pilot
+    /// flying's flight-control inputs.
+    pub fn frame(&mut self, refs: &Refs, dt: f32, net: &NetHandle, controls: [f32; MAX_INPUTS]) {
         let paused = refs.is_paused();
         if paused != self.paused {
             self.paused = paused;
@@ -278,9 +285,9 @@ impl Authority {
         if self.clock < self.next_send {
             return;
         }
-        net.send(NetCommand::SendFlightState(
-            refs.sample(self.epoch, self.seq, self.clock),
-        ));
+        let mut state = refs.sample(self.epoch, self.seq, self.clock);
+        state.controls = controls;
+        net.send(NetCommand::SendFlightState(state));
         self.seq = self.seq.wrapping_add(1);
         self.next_send += 1.0 / SEND_RATE;
         if self.next_send <= self.clock {
@@ -291,7 +298,7 @@ impl Authority {
 }
 
 /// The follower: overrides the flight model and shows the authority's
-/// motion (tasks 5.4-5.6).
+/// motion.
 pub struct Follower {
     playout: Playout,
     origin: Instant,
@@ -304,19 +311,26 @@ pub struct Follower {
 }
 
 impl Follower {
-    /// Starts following samples of control epoch `control_epoch`.
-    pub fn start(refs: &Refs, control_epoch: u32) -> Self {
+    /// Starts following samples of control epoch `control_epoch`. After a
+    /// handover (`after_handover`), this seat flew until now, and the
+    /// playout eases from its own aircraft into the new stream.
+    pub fn start(refs: &Refs, control_epoch: u32, after_handover: bool) -> Self {
         let resting_height = refs.resting_height();
+        let playout = if after_handover {
+            Playout::after_handover(control_epoch, refs.sample(control_epoch, 0, 0.0))
+        } else {
+            Playout::for_epoch(control_epoch)
+        };
         refs.set_overrides(true);
         if let Some(h) = resting_height {
             info!(height_m = h, "measured resting height on the ground");
         }
         info!(
             control_epoch,
-            "following: flight-model path and control surfaces overridden"
+            after_handover, "following: flight-model path and control surfaces overridden"
         );
         Self {
-            playout: Playout::for_epoch(control_epoch),
+            playout,
             origin: Instant::now(),
             probe: TerrainProbe::new(),
             last_pose: None,
@@ -336,12 +350,14 @@ impl Follower {
         self.playout.set_paused(paused);
     }
 
-    pub fn frame(&mut self, refs: &Refs) {
+    /// Shows the next pose; returns it.
+    pub fn frame(&mut self, refs: &Refs) -> Option<&FlightState> {
         let now = self.origin.elapsed().as_secs_f64();
         if let Some(pose) = self.playout.sample(now) {
             refs.apply(&pose, &self.probe, self.resting_height);
             self.last_pose = Some(pose);
         }
+        self.last_pose.as_ref()
     }
 
     /// Gives the aircraft back to X-Plane in one frame: the last pose and
