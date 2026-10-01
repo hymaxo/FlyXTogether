@@ -1,5 +1,7 @@
 <div align="center">
 
+**English** · [Русский](README.ru.md)
+
 # ✈️ FlyXTogether
 
 **Fly one airplane with a friend in X-Plane 12: free and open source.**
