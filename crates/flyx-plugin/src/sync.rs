@@ -119,7 +119,19 @@ impl Refs {
     }
 
     /// The user's aircraft as a flight-state sample.
-    fn sample(&self, epoch: u32, seq: u32, sim_time: f64) -> FlightState {
+    /// Height of the aircraft's reference point over the terrain below it.
+    /// (`y_agl` is measured from the lowest point of the aircraft, about
+    /// zero when parked, so it cannot place the reference point.)
+    fn height_over_terrain(&self, probe: &TerrainProbe) -> Option<f64> {
+        let (x, y, z) = (
+            self.local[0].get(),
+            self.local[1].get(),
+            self.local[2].get(),
+        );
+        probe.ground_y(x, y, z).map(|ground| y - ground)
+    }
+
+    fn sample(&self, epoch: u32, seq: u32, sim_time: f64, probe: &TerrainProbe) -> FlightState {
         let get3 = |r: &[DataRef<f32>; 3]| [r[0].get(), r[1].get(), r[2].get()];
         let engines = self.engines();
         let mut running = [0i32; MAX_ENGINES];
@@ -141,7 +153,9 @@ impl Refs {
             velocity: get3(&self.velocity),
             acceleration: get3(&self.acceleration),
             rates_deg: get3(&self.rates),
-            height_agl_m: self.y_agl.get(),
+            height_agl_m: self
+                .height_over_terrain(probe)
+                .map_or(self.y_agl.get(), |h| h as f32),
             on_ground: self.on_ground.get() != 0,
             visuals: Visuals {
                 aileron_deg: Self::parts(&self.aileron),
@@ -165,8 +179,11 @@ impl Refs {
     /// Moves the user's aircraft to `pose`.
     /// The user's aircraft height above ground right now, if it is
     /// resting on the ground.
-    fn resting_height(&self) -> Option<f64> {
-        (self.on_ground.get() != 0).then(|| self.y_agl.get() as f64)
+    fn resting_height(&self, probe: &TerrainProbe) -> Option<f64> {
+        if self.on_ground.get() == 0 {
+            return None;
+        }
+        self.height_over_terrain(probe)
     }
 
     /// Moves the user's aircraft to `pose`. On the ground the aircraft sits
@@ -251,6 +268,7 @@ pub struct Authority {
     next_send: f64,
     seq: u32,
     paused: bool,
+    probe: TerrainProbe,
 }
 
 impl Authority {
@@ -262,6 +280,7 @@ impl Authority {
             next_send: 0.0,
             seq: 0,
             paused: false,
+            probe: TerrainProbe::new(),
         }
     }
 
@@ -285,7 +304,7 @@ impl Authority {
         if self.clock < self.next_send {
             return;
         }
-        let mut state = refs.sample(self.epoch, self.seq, self.clock);
+        let mut state = refs.sample(self.epoch, self.seq, self.clock, &self.probe);
         state.controls = controls;
         net.send(NetCommand::SendFlightState(state));
         self.seq = self.seq.wrapping_add(1);
@@ -317,9 +336,10 @@ impl Follower {
     /// handover (`after_handover`), this seat flew until now, and the
     /// playout eases from its own aircraft into the new stream.
     pub fn start(refs: &Refs, control_epoch: u32, after_handover: bool) -> Self {
-        let resting_height = refs.resting_height();
+        let probe = TerrainProbe::new();
+        let resting_height = refs.resting_height(&probe);
         let playout = if after_handover {
-            Playout::after_handover(control_epoch, refs.sample(control_epoch, 0, 0.0))
+            Playout::after_handover(control_epoch, refs.sample(control_epoch, 0, 0.0, &probe))
         } else {
             Playout::for_epoch(control_epoch)
         };
@@ -334,7 +354,7 @@ impl Follower {
         Self {
             playout,
             origin: Instant::now(),
-            probe: TerrainProbe::new(),
+            probe,
             last_pose: None,
             resting_height,
             lead_logged: !after_handover,

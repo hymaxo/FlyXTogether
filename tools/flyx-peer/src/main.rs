@@ -239,8 +239,11 @@ async fn run(cli: Cli) {
         script,
         connected_at: None,
         is_host,
+        following_ended_now: false,
         running_engines: cli.running_engines.clamp(1, flyx_protocol::MAX_ENGINES),
         retractable: cli.retractable,
+        last_received: None,
+        carry_on: None,
     };
     peer.handle(request);
     peer.run(flight.rate, deadline, end).await;
@@ -263,13 +266,21 @@ struct Peer {
     script: Vec<ScriptStep>,
     connected_at: Option<Instant>,
     is_host: bool,
+    /// Set while handling an event whose effects stopped following.
+    following_ended_now: bool,
     running_engines: usize,
     retractable: bool,
+    /// The latest sample received while following.
+    last_received: Option<FlightState>,
+    /// After a handover, the peer flies on straight and level from where
+    /// it was following: the sample it started from and when.
+    carry_on: Option<(FlightState, f64)>,
 }
 
 impl Peer {
     /// Feeds an event into the session and carries out its effects.
     fn handle(&mut self, event: Event) {
+        self.following_ended_now = false;
         let outcome = self.session.handle(event);
         if let Some(notice) = outcome.notice {
             match notice {
@@ -297,15 +308,24 @@ impl Peer {
                     self.net.send(NetCommand::SendTakeControls { seen_epoch })
                 }
                 Effect::StartStreaming { epoch } => {
-                    info!(epoch, "pilot flying: streaming the trajectory");
                     self.streaming = Some(epoch);
+                    match self.last_received.take() {
+                        Some(from) if self.following_ended_now => {
+                            info!(epoch, "pilot flying: carrying on from the handover");
+                            self.carry_on = Some((from, self.start.elapsed().as_secs_f64()));
+                        }
+                        _ => info!(epoch, "pilot flying: streaming the trajectory"),
+                    }
                 }
                 Effect::StopStreaming => self.streaming = None,
                 Effect::StartFollowing { epoch, .. } => {
                     info!(epoch, "pilot monitoring: following");
                     self.following = true;
                 }
-                Effect::StopFollowing => self.following = false,
+                Effect::StopFollowing => {
+                    self.following = false;
+                    self.following_ended_now = true;
+                }
             }
         }
         if let Some(line) = self.session.controls_line() {
@@ -366,6 +386,13 @@ impl Peer {
 
     /// The synthetic flight at `now`, as this aircraft would report it.
     fn flight_state(&self, epoch: u32, now: f64) -> FlightState {
+        if let Some((from, t0)) = self.carry_on {
+            let mut state = carry_on(&from, now - t0);
+            state.epoch = epoch;
+            state.seq = self.seq;
+            state.sim_time = now;
+            return state;
+        }
         let mut state = self.trajectory.state_at(now, self.seq);
         state.epoch = epoch;
         let v = state.visuals;
@@ -433,6 +460,7 @@ impl Peer {
         while let Some(sample) = self.net.try_sample() {
             if self.following {
                 self.stats.add(&sample.state, sample.received_at);
+                self.last_received = Some(sample.state);
             }
         }
         let now = self.start.elapsed().as_secs_f64();
@@ -486,6 +514,22 @@ impl Peer {
         }
         None
     }
+}
+
+/// `from` moved on for `dt` seconds, straight and level.
+fn carry_on(from: &FlightState, dt: f64) -> FlightState {
+    const EARTH_RADIUS_M: f64 = 6_371_000.0;
+    let mut s = *from;
+    let east = from.velocity[0] as f64 * dt;
+    let north = -(from.velocity[2] as f64) * dt;
+    s.latitude_deg += (north / EARTH_RADIUS_M).to_degrees();
+    s.longitude_deg +=
+        (east / (EARTH_RADIUS_M * from.latitude_deg.to_radians().cos())).to_degrees();
+    s.velocity[1] = 0.0;
+    s.acceleration = [0.0; 3];
+    s.rates_deg = [0.0; 3];
+    s.phi_deg = 0.0;
+    s
 }
 
 /// Sleeps until `deadline`, or forever without one.

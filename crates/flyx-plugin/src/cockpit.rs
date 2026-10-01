@@ -56,6 +56,9 @@ pub struct CockpitSync {
     /// Flight-control inputs, in definition order.
     inputs: Vec<u16>,
     overrides: Vec<u16>,
+    /// The pilot flying's latest systems state, written every frame
+    /// while following: the follower's own systems would pull them back.
+    state: BTreeMap<u16, Value>,
     /// Entries not resolved yet, retried for a while after loading.
     pending: Vec<u16>,
     next_resolve: f64,
@@ -113,6 +116,7 @@ impl CockpitSync {
             replaying: Rc::default(),
             inputs,
             overrides,
+            state: BTreeMap::new(),
             pending,
             next_resolve: 0.0,
             active: None,
@@ -290,6 +294,7 @@ impl CockpitSync {
             }
         }
         self.set_monitoring(false);
+        self.state.clear();
     }
 
     /// While following, the pilot monitoring's own hardware, autopilot and
@@ -299,6 +304,9 @@ impl CockpitSync {
             return;
         }
         self.monitoring = on;
+        if !on {
+            self.state.clear();
+        }
         for &key in &self.overrides {
             self.write(key, Value::Int(on as i32));
         }
@@ -324,10 +332,14 @@ impl CockpitSync {
         out
     }
 
-    /// Pilot monitoring: shows the pilot flying's inputs.
+    /// Pilot monitoring, every frame: shows the pilot flying's inputs and
+    /// holds its systems state.
     pub fn write_inputs(&self, inputs: &[f32; MAX_INPUTS]) {
         for (&key, &value) in self.inputs.iter().zip(inputs) {
             self.write(key, Value::Float(value));
+        }
+        for (&key, &value) in &self.state {
+            self.write(key, value);
         }
     }
 
@@ -464,6 +476,7 @@ impl CockpitSync {
                 .get(key as usize)
                 .is_some_and(|e| e.class == Class::State);
             if is_state {
+                self.state.insert(key, value);
                 self.write(key, value);
             }
         }

@@ -206,6 +206,14 @@ epsilon = 0.1
 dataref = "sim/flightmodel/engine/ENGN_oil_press_psi"
 index = "per_engine"
 epsilon = 0.1
+# The vacuum gyros (attitude indicator, directional gyro) need suction,
+# which the following seat's frozen engine does not make.
+[[state]]
+dataref = "sim/cockpit/misc/vacuum"
+epsilon = 0.01
+[[state]]
+dataref = "sim/cockpit/misc/vacuum2"
+epsilon = 0.01
 [[state]]
 dataref = "sim/flightmodel/engine/ENGN_FF_"
 index = "per_engine"
