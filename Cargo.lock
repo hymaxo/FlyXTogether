@@ -384,7 +384,7 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
 name = "flyx-net"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "argon2",
  "bytes",
@@ -405,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "flyx-peer"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "clap",
  "flyx-net",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "flyx-plugin"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "flyx-net",
  "flyx-protocol",
@@ -433,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "flyx-protocol"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "postcard",
  "serde",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "flyx-sync"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "flyx-protocol",
  "serde",
@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "flyx-xplm"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "imgui",
  "thiserror",

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+Available as the [nightly build](https://github.com/hymaxo/FlyXTogether/releases/tag/nightly).
+Not compatible with 0.1.0-alpha.1: both pilots need the same build.
+
+- **Shared cockpit.** Switches, knobs, radios, autopilot settings, fuel and
+  the magnetos sync both ways. Buttons and held commands (such as the starter)
+  run on both seats.
+- **Take controls.** Either pilot can take the flight controls with the
+  **Take controls** button, the Plugins menu item or a key binding. The
+  aircraft continues without a jump.
+- **Live instruments on the following seat.** Its flight model keeps running
+  with the aircraft placed where the pilot flying's is, so every gauge, the
+  engine and the avionics work on their own. A stopped engine is started to
+  match the pilot flying's.
+- **Any aircraft.** What to sync is worked out from the aircraft's own cockpit
+  files. Aircraft without a verified profile are marked untested; the
+  Cessna 172 SP (all three variants) is verified. See
+  [docs/profiles.md](https://github.com/hymaxo/FlyXTogether/blob/main/docs/profiles.md).
+
 ## 0.1.0-alpha.1
 
 The very first release. Hello, world! 👋✈️
