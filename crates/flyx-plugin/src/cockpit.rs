@@ -22,6 +22,10 @@ use tracing::{debug, info, warn};
 
 /// Systems datagrams per second while pilot flying.
 const SYSTEMS_INTERVAL_S: f64 = 0.5;
+/// Unresolved entries are retried this often...
+const RESOLVE_INTERVAL_S: f64 = 1.0;
+/// ...for this long after the aircraft loaded.
+const RESOLVE_FOR_S: f64 = 30.0;
 
 fn to_x(value: Value) -> XValue {
     match value {
@@ -44,7 +48,7 @@ pub struct CockpitSync {
     pub definition: Definition,
     datarefs: BTreeMap<u16, DynRef>,
     commands: BTreeMap<u16, Command>,
-    _handlers: Vec<CommandHandler>,
+    handlers: Vec<CommandHandler>,
     /// Command phases seen by the handlers, drained every frame.
     pressed: Rc<RefCell<Vec<(u16, HandlerPhase)>>>,
     /// Set while replaying a command from the other seat.
@@ -52,6 +56,9 @@ pub struct CockpitSync {
     /// Flight-control inputs, in definition order.
     inputs: Vec<u16>,
     overrides: Vec<u16>,
+    /// Entries not resolved yet, retried for a while after loading.
+    pending: Vec<u16>,
+    next_resolve: f64,
     active: Option<Active>,
     monitoring: bool,
     origin: Instant,
@@ -85,86 +92,118 @@ impl CockpitSync {
             &profiles,
         );
 
-        let pressed: Rc<RefCell<Vec<(u16, HandlerPhase)>>> = Rc::default();
-        let replaying: Rc<Cell<bool>> = Rc::default();
-        let mut datarefs = BTreeMap::new();
-        let mut commands = BTreeMap::new();
-        let mut handlers = Vec::new();
-        let mut missing = Vec::new();
-        for (i, entry) in definition.entries.iter().enumerate() {
-            let key = i as u16;
-            match &entry.target {
-                Target::Dataref(d) => match DynRef::find(&d.name, d.index) {
-                    Ok(r) => {
-                        datarefs.insert(key, r);
-                    }
-                    Err(e) => missing.push(format!("{d} ({e})")),
-                },
-                Target::Command(name) => match Command::find(name) {
-                    Some(command) => {
-                        commands.insert(key, command);
-                        let pressed = pressed.clone();
-                        let replaying = replaying.clone();
-                        handlers.push(CommandHandler::register(command, true, move |phase| {
-                            if !replaying.get() {
-                                let phase = match phase {
-                                    Phase::Begin => HandlerPhase::Begin,
-                                    Phase::Continue => HandlerPhase::Continue,
-                                    Phase::End => HandlerPhase::End,
-                                };
-                                if phase != HandlerPhase::Continue {
-                                    pressed.borrow_mut().push((key, phase));
-                                }
-                            }
-                            true
-                        }));
-                    }
-                    None => missing.push(format!("{name} (command not found)")),
-                },
-            }
-        }
-        if !missing.is_empty() {
-            warn!(
-                count = missing.len(),
-                "sync definition entries X-Plane does not know: {}",
-                missing.join(", ")
-            );
-        }
-        let keys = |class| {
-            definition
-                .of_class(class)
-                .map(|(k, _)| k as u16)
-                .filter(|k| datarefs.contains_key(k))
-                .collect::<Vec<_>>()
-        };
-        let inputs: Vec<u16> = keys(Class::Input).into_iter().take(MAX_INPUTS).collect();
-        let overrides = keys(Class::MonitorOverride);
-        info!(
-            aircraft = acf,
-            manipulators = manipulators.count,
-            commands = definition.count(Class::Command),
-            shared = definition.count(Class::Shared),
-            state = definition.count(Class::State),
-            inputs = inputs.len(),
-            resolved = datarefs.len() + commands.len(),
-            skipped = missing.len(),
-            verified = definition.verified,
-            profile = ?definition.profile,
-            "sync definition built"
-        );
-        Self {
+        // Slots are fixed by the definition, so both seats agree even if
+        // one cannot resolve an input.
+        let inputs: Vec<u16> = definition
+            .of_class(Class::Input)
+            .map(|(k, _)| k as u16)
+            .take(MAX_INPUTS)
+            .collect();
+        let overrides = definition
+            .of_class(Class::MonitorOverride)
+            .map(|(k, _)| k as u16)
+            .collect();
+        let pending = (0..definition.entries.len() as u16).collect();
+        let mut sync = Self {
             definition,
-            datarefs,
-            commands,
-            _handlers: handlers,
-            pressed,
-            replaying,
+            datarefs: BTreeMap::new(),
+            commands: BTreeMap::new(),
+            handlers: Vec::new(),
+            pressed: Rc::default(),
+            replaying: Rc::default(),
             inputs,
             overrides,
+            pending,
+            next_resolve: 0.0,
             active: None,
             monitoring: false,
             origin: Instant::now(),
             frame: 0,
+        };
+        sync.resolve_pending();
+        info!(
+            aircraft = acf,
+            manipulators = manipulators.count,
+            commands = sync.definition.count(Class::Command),
+            shared = sync.definition.count(Class::Shared),
+            state = sync.definition.count(Class::State),
+            inputs = sync.inputs.len(),
+            resolved = sync.datarefs.len() + sync.commands.len(),
+            pending = sync.pending.len(),
+            verified = sync.definition.verified,
+            profile = ?sync.definition.profile,
+            "sync definition built"
+        );
+        sync
+    }
+
+    /// Looks up the entries X-Plane did not know yet. Aircraft plugins
+    /// (such as the C172's xlua scripts) create their datarefs and
+    /// commands after the aircraft-loaded message, so this is retried.
+    fn resolve_pending(&mut self) {
+        let pending = std::mem::take(&mut self.pending);
+        for key in pending {
+            let Some(entry) = self.definition.entries.get(key as usize) else {
+                continue;
+            };
+            match &entry.target {
+                Target::Dataref(d) => match DynRef::find(&d.name, d.index) {
+                    Ok(r) => {
+                        self.datarefs.insert(key, r);
+                    }
+                    Err(_) => self.pending.push(key),
+                },
+                Target::Command(name) => match Command::find(name) {
+                    Some(command) => {
+                        self.commands.insert(key, command);
+                        let pressed = self.pressed.clone();
+                        let replaying = self.replaying.clone();
+                        self.handlers
+                            .push(CommandHandler::register(command, true, move |phase| {
+                                if !replaying.get() {
+                                    let phase = match phase {
+                                        Phase::Begin => HandlerPhase::Begin,
+                                        Phase::Continue => HandlerPhase::Continue,
+                                        Phase::End => HandlerPhase::End,
+                                    };
+                                    if phase != HandlerPhase::Continue {
+                                        pressed.borrow_mut().push((key, phase));
+                                    }
+                                }
+                                true
+                            }));
+                    }
+                    None => self.pending.push(key),
+                },
+            }
+        }
+    }
+
+    /// Retries unresolved entries every [`RESOLVE_INTERVAL_S`] for
+    /// [`RESOLVE_FOR_S`] after loading, then logs what stayed unknown.
+    fn retry_pending(&mut self, now: f64) {
+        if self.pending.is_empty() || now < self.next_resolve {
+            return;
+        }
+        self.next_resolve = now + RESOLVE_INTERVAL_S;
+        let before = self.pending.len();
+        self.resolve_pending();
+        let resolved = before - self.pending.len();
+        if resolved > 0 {
+            info!(
+                resolved,
+                pending = self.pending.len(),
+                "late sync definition entries resolved"
+            );
+        }
+        if now >= RESOLVE_FOR_S && !self.pending.is_empty() {
+            let names: Vec<String> = self.pending.iter().map(|&k| self.name(k)).collect();
+            warn!(
+                count = names.len(),
+                "sync definition entries X-Plane does not know: {}",
+                names.join(", ")
+            );
+            self.pending.clear();
         }
     }
 
@@ -302,6 +341,12 @@ impl CockpitSync {
                 }
             }
         }
+    }
+
+    /// Runs once per frame, connected or not.
+    pub fn tick(&mut self) {
+        let now = self.now();
+        self.retry_pending(now);
     }
 
     /// Runs once per frame while connected. `flying` is the control epoch

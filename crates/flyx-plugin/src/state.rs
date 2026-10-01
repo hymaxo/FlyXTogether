@@ -345,6 +345,7 @@ fn on_frame(tick: Tick) -> NextCall {
                 e.cockpit.write_inputs(&pose.controls);
             }
         }
+        e.cockpit.tick();
         if e.session.controls().is_some()
             && let Some(net) = &e.net
         {

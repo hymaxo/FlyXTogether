@@ -270,3 +270,7 @@ dataref = "*audio_volume*"
 dataref = "*_volume_*"
 [[local]]
 dataref = "sim/operation/*"
+# The pilot flying owns the throttles (per engine, see [[input]]); the
+# all-engines lever some cockpits move must not be shared.
+[[local]]
+dataref = "sim/cockpit2/engine/actuators/throttle_ratio_all"
