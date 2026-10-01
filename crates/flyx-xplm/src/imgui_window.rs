@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use imgui::{Context, DrawCmd, DrawCmdParams, DrawData, Key, TextureId, Ui};
+use imgui::{ClipboardBackend, Context, DrawCmd, DrawCmdParams, DrawData, Key, TextureId, Ui};
 
 use crate::gl::{Scope2d, Texture};
 use crate::sys;
@@ -47,11 +47,44 @@ struct ImguiDelegate {
     focus_taken_away: bool,
 }
 
+/// The system clipboard, so text copied in other programs can be pasted
+/// (Ctrl+V) and text copied here can be pasted elsewhere. Opened on first
+/// use; without one, ImGui only copies and pastes within itself.
+#[derive(Default)]
+struct OsClipboard {
+    clipboard: Option<arboard::Clipboard>,
+}
+
+impl OsClipboard {
+    fn open(&mut self) -> Option<&mut arboard::Clipboard> {
+        if self.clipboard.is_none() {
+            match arboard::Clipboard::new() {
+                Ok(c) => self.clipboard = Some(c),
+                Err(e) => tracing::warn!(%e, "system clipboard unavailable"),
+            }
+        }
+        self.clipboard.as_mut()
+    }
+}
+
+impl ClipboardBackend for OsClipboard {
+    fn get(&mut self) -> Option<String> {
+        self.open()?.get_text().ok()
+    }
+
+    fn set(&mut self, value: &str) {
+        if let Some(c) = self.open() {
+            let _ = c.set_text(value.to_owned());
+        }
+    }
+}
+
 impl ImguiDelegate {
     fn new(build: Box<dyn FnMut(&Ui)>) -> Self {
         let mut imgui = Context::create();
         imgui.set_ini_filename(None);
         imgui.set_log_filename(None);
+        imgui.set_clipboard_backend(OsClipboard::default());
         let style = imgui.style_mut();
         style.window_rounding = 0.0;
         style.frame_rounding = 3.0;
@@ -185,6 +218,10 @@ impl WindowDelegate for ImguiDelegate {
         io.add_key_event(Key::ModCtrl, event.control);
         io.add_key_event(Key::ModShift, event.shift);
         io.add_key_event(Key::ModAlt, event.alt);
+        // On macOS, X-Plane reports Command as the control flag, and ImGui
+        // expects Command (Super) for copy and paste.
+        #[cfg(target_os = "macos")]
+        io.add_key_event(Key::ModSuper, event.control);
         if let Some(key) = map_key(event.virtual_key) {
             io.add_key_event(key, true);
             io.add_key_event(key, false);
@@ -197,6 +234,8 @@ impl WindowDelegate for ImguiDelegate {
         io.add_key_event(Key::ModCtrl, false);
         io.add_key_event(Key::ModShift, false);
         io.add_key_event(Key::ModAlt, false);
+        #[cfg(target_os = "macos")]
+        io.add_key_event(Key::ModSuper, false);
     }
 
     fn focus_lost(&mut self, _ctx: &WindowContext) {

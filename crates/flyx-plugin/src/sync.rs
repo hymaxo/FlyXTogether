@@ -36,6 +36,7 @@ const ENGINE_MATCH_ATTEMPTS: u8 = 2;
 const CRANK_MAX_S: f64 = 10.0;
 
 const CONTROL_SURFACES: &str = "sim/operation/override/override_control_surfaces";
+const MIXTURE: &str = "sim/operation/override/override_mixture";
 
 /// Every dataref the sync reads or writes, looked up once.
 pub struct Refs {
@@ -72,6 +73,10 @@ pub struct Refs {
     gear_deploy_set: ArrayRef<f32>,
     control_surfaces: DataRef<i32>,
     crashed: DataRef<i32>,
+    /// While set, the engines use `engine_mixture`, not the levers.
+    override_mixture: DataRef<i32>,
+    engine_mixture: ArrayRef<f32>,
+    mixture_lever: ArrayRef<f32>,
 }
 
 fn scalar<T: flyx_xplm::dataref::Scalar>(name: &str) -> Result<DataRef<T>, String> {
@@ -120,6 +125,9 @@ impl Refs {
             gear_deploy_set: array("sim/aircraft/parts/acf_gear_deploy")?,
             control_surfaces: scalar(CONTROL_SURFACES)?,
             crashed: scalar("sim/flightmodel2/misc/has_crashed")?,
+            override_mixture: scalar(MIXTURE)?,
+            engine_mixture: array("sim/flightmodel/engine/ENGN_mixt")?,
+            mixture_lever: array("sim/cockpit2/engine/actuators/mixture_ratio")?,
         })
     }
 
@@ -360,6 +368,10 @@ pub struct Follower {
     engine_attempts: [(bool, u8); MAX_ENGINES],
     /// Per engine: since when its starter is held.
     cranking: [Option<f64>; MAX_ENGINES],
+    /// Per engine: since when its fuel is cut to stop it.
+    stopping: [Option<f64>; MAX_ENGINES],
+    /// The mixture override is set because an engine is being stopped.
+    mixture_overridden: bool,
     /// Starter commands to begin (`true`) or end, run by the cockpit sync
     /// so they are not forwarded to the other seat.
     starter_requests: Vec<(usize, bool)>,
@@ -405,6 +417,8 @@ impl Follower {
             engine_mismatch: [None; MAX_ENGINES],
             engine_attempts: [(false, 0); MAX_ENGINES],
             cranking: [None; MAX_ENGINES],
+            stopping: [None; MAX_ENGINES],
+            mixture_overridden: false,
             starter_requests: Vec::new(),
             paused_with_pilot_flying: false,
             crash_logged: false,
@@ -463,25 +477,33 @@ impl Follower {
     /// controls and the forwarded starter are the pilot flying's. One that
     /// still disagrees after [`ENGINE_MISMATCH_S`] (for example because
     /// this seat joined with its engine off) is started with its starter
-    /// until it runs, or stopped, at most [`ENGINE_MATCH_ATTEMPTS`] times:
+    /// until it runs, or stopped by cutting its fuel, at most
+    /// [`ENGINE_MATCH_ATTEMPTS`] times:
     /// an engine whose own controls cannot keep it running is not cranked
     /// over and over.
     fn match_engines(&mut self, refs: &Refs, pose: &FlightState, now: f64) {
         let local = refs.engines_running();
-        for i in 0..refs.engines() {
+        for (i, &running) in local.iter().enumerate().take(refs.engines()) {
             let wanted = pose.visuals.engine_running[i];
             if self.engine_attempts[i].0 != wanted {
                 self.engine_attempts[i] = (wanted, 0);
             }
             if let Some(since) = self.cranking[i] {
-                if local[i] || !wanted || now - since >= CRANK_MAX_S {
+                if running || !wanted || now - since >= CRANK_MAX_S {
                     self.cranking[i] = None;
                     self.starter_requests.push((i, false));
-                    info!(engine = i, started = local[i], "starter released");
+                    info!(engine = i, started = running, "starter released");
                 }
                 continue;
             }
-            if local[i] == wanted || self.engine_attempts[i].1 > ENGINE_MATCH_ATTEMPTS {
+            if let Some(since) = self.stopping[i] {
+                if !running || wanted || now - since >= CRANK_MAX_S {
+                    self.stopping[i] = None;
+                    info!(engine = i, stopped = !running, "fuel cut released");
+                }
+                continue;
+            }
+            if running == wanted || self.engine_attempts[i].1 > ENGINE_MATCH_ATTEMPTS {
                 self.engine_mismatch[i] = None;
                 continue;
             }
@@ -509,13 +531,39 @@ impl Follower {
             } else {
                 info!(
                     engine = i,
-                    "engine runs while the pilot flying's is stopped: stopping it"
+                    "engine runs while the pilot flying's is stopped: cutting its fuel"
                 );
-                let mut running = local.map(|r| r as i32);
-                running[i] = 0;
-                refs.engine_running.set(0, &running[..refs.engines()]);
+                self.stopping[i] = Some(now);
             }
         }
+        self.cut_fuel(refs);
+    }
+
+    /// Starves the engines being stopped through X-Plane's mixture
+    /// override; the others keep the mixture their levers set. The cockpit
+    /// levers are not touched, so nothing is sent to the other seat.
+    fn cut_fuel(&mut self, refs: &Refs) {
+        let engines = refs.engines();
+        let any = self.stopping[..engines].iter().any(Option::is_some);
+        if any {
+            let mut mixture = [0.0f32; MAX_ENGINES];
+            refs.mixture_lever.get(0, &mut mixture[..engines]);
+            for (i, m) in mixture.iter_mut().enumerate().take(engines) {
+                if self.stopping[i].is_some() {
+                    *m = 0.0;
+                }
+            }
+            refs.override_mixture.set(1);
+            refs.engine_mixture.set(0, &mixture[..engines]);
+        } else if self.mixture_overridden {
+            refs.override_mixture.set(0);
+        }
+        self.mixture_overridden = any;
+    }
+
+    /// The pose shown last, if any.
+    pub fn last_pose(&self) -> Option<&FlightState> {
+        self.last_pose.as_ref()
     }
 
     /// Starter commands to run now: (engine, begin or end).
@@ -532,6 +580,9 @@ impl Follower {
             refs.apply(pose, &self.probe, self.resting_height);
         }
         refs.set_overrides(false);
+        if self.mixture_overridden {
+            refs.override_mixture.set(0);
+        }
         if self.paused_with_pilot_flying && refs.is_paused() {
             run_command("sim/operation/pause_off");
         }
@@ -555,9 +606,11 @@ fn run_command(name: &str) {
 /// Clears the overrides without any other state; used by the emergency
 /// teardown after an internal error.
 pub fn emergency_release() {
-    match DataRef::<i32>::find(CONTROL_SURFACES) {
-        Some(surfaces) => surfaces.set(0),
-        None => warn!("emergency release: override dataref not found"),
+    for name in [CONTROL_SURFACES, MIXTURE] {
+        match DataRef::<i32>::find(name) {
+            Some(r) => r.set(0),
+            None => warn!(name, "emergency release: override dataref not found"),
+        }
     }
 }
 

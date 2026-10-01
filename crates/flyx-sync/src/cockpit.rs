@@ -18,7 +18,10 @@ pub const MIN_INTERVAL_S: f64 = 0.05;
 pub const ECHO_FRAMES: u64 = 2;
 /// A key that changed in this many distinct seconds out of the last
 /// [`NOISY_WINDOW_S`] changes on its own (no person operates one control
-/// that long) and is muted for the session.
+/// that long): the simulator drives it, for example an autopilot. It is
+/// muted: this seat stops sending its changes. On the pilot flying, a muted
+/// key's value goes to the pilot monitoring with the systems state instead.
+/// Mutes are cleared whenever the controls change hands.
 pub const NOISY_SECONDS: usize = 20;
 pub const NOISY_WINDOW_S: f64 = 30.0;
 
@@ -108,6 +111,34 @@ impl Register {
 
     pub fn is_muted(&self, key: u16) -> bool {
         self.slots.get(&key).is_some_and(|s| s.muted)
+    }
+
+    /// The keys this seat stopped sending because they change on their own.
+    pub fn muted_keys(&self) -> Vec<u16> {
+        self.slots
+            .iter()
+            .filter(|(_, s)| s.muted)
+            .map(|(k, _)| *k)
+            .collect()
+    }
+
+    /// Pilot monitoring: the pilot flying sends `key` with its systems
+    /// state, so this seat follows it and stops sending its own changes.
+    pub fn mute(&mut self, key: u16) {
+        if let Some(slot) = self.slots.get_mut(&key) {
+            slot.muted = true;
+            slot.unsent = None;
+        }
+    }
+
+    /// The controls changed hands: values the old pilot flying's simulator
+    /// drove may now be driven by the other seat's, so every key starts
+    /// unmuted again.
+    pub fn unmute_all(&mut self) {
+        for slot in self.slots.values_mut() {
+            slot.muted = false;
+            slot.change_seconds.clear();
+        }
     }
 
     /// A command from the other seat was replayed in `frame`: changes seen
@@ -261,10 +292,12 @@ impl Register {
         actions
     }
 
-    /// Every value this seat knows, for a join snapshot.
+    /// Every value this seat knows, for a join snapshot and drift repair.
+    /// Muted keys are left out: their last known value is stale.
     pub fn snapshot(&self) -> Vec<(u16, Value)> {
         self.slots
             .iter()
+            .filter(|(_, s)| !s.muted)
             .filter_map(|(k, s)| s.last_known.map(|v| (*k, v)))
             .collect()
     }

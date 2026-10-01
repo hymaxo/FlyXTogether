@@ -421,7 +421,7 @@ mod tests {
                 .contains(&"sim/cockpit2/engine/actuators/throttle_ratio[0]".to_owned())
         );
         // Overrides live under sim/operation/ but are not removed as local.
-        assert_eq!(d.count(Class::MonitorOverride), 4);
+        assert_eq!(d.count(Class::MonitorOverride), 7);
     }
 
     #[test]
@@ -483,7 +483,7 @@ dataref = "laminar/c172/knob_OAT"
 command = "sim/GPS/g1000n1_softkey{1..2}"
 variants = ["g1000"]
 [[state]]
-dataref = "sim/cockpit/electrical/battery_charge_watt_hr"
+dataref = "sim/flightmodel/engine/ENGN_CHT_c"
 index = [0]
 "#,
         )
@@ -494,8 +494,7 @@ index = [0]
         assert_eq!(d.profile, Some(("Cessna 172 SP".into(), "standard".into())));
         assert!(!names(&d, Class::Shared).contains(&"laminar/c172/knob_OAT".to_owned()));
         assert!(
-            names(&d, Class::State)
-                .contains(&"sim/cockpit/electrical/battery_charge_watt_hr[0]".to_owned())
+            names(&d, Class::State).contains(&"sim/flightmodel/engine/ENGN_CHT_c[0]".to_owned())
         );
         // The G1000-only commands do not apply to the standard variant.
         assert!(

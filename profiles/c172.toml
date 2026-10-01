@@ -1,8 +1,7 @@
 # Laminar Research Cessna 172 SP (X-Plane 12), all three variants.
 #
-# Almost everything is found automatically in the cockpit files; this
-# profile marks the aircraft as verified and adds the few things the
-# generator cannot know. See docs/profiles.md.
+# Everything is found automatically in the cockpit files; this profile
+# marks the aircraft as verified. See docs/profiles.md.
 format = 1
 name = "Cessna 172 SP"
 verified = true
@@ -21,10 +20,3 @@ acf = "Cessna_172SP_G1000.acf"
 id = "seaplane"
 folder = "Cessna 172 SP"
 acf = "Cessna_172SP_seaplane.acf"
-
-# The battery charge drifts apart otherwise: the following seat's
-# alternator does not turn while its engine is frozen.
-[[state]]
-dataref = "sim/cockpit/electrical/battery_charge_watt_hr"
-index = [0, 1]
-epsilon = 0.05

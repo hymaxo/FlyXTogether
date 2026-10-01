@@ -227,6 +227,35 @@ fn a_key_changing_on_its_own_is_muted() {
     assert!(!host.reg.is_muted(4));
 }
 
+// Scenario: the autopilot trims for a long time on the pilot flying.
+#[test]
+fn muted_keys_leave_the_snapshot_and_unmute_on_handover() {
+    let (mut host, _) = pair(&[4, 5]);
+    for second in 0..25 {
+        host.sim.insert(4, Value::Float(second as f32));
+        let actions = host
+            .reg
+            .observe(4, host.sim[&4], 100 + second, 10.0 + second as f64);
+        host.apply(actions);
+    }
+    assert_eq!(host.reg.muted_keys(), vec![4]);
+    // Its stale value is neither repaired nor snapshotted.
+    let keys: Vec<u16> = host.reg.snapshot().iter().map(|(k, _)| *k).collect();
+    assert_eq!(keys, vec![5]);
+    // The controls change hands: it is a normal shared value again.
+    host.reg.unmute_all();
+    assert!(host.reg.muted_keys().is_empty());
+    host.outbox.clear();
+    host.sim.insert(4, Value::Float(99.0));
+    host.frame(200, 60.0);
+    assert_eq!(host.outbox.len(), 1);
+    // A pilot monitoring told to follow the pilot flying's value mutes it.
+    host.reg.mute(5);
+    host.sim.insert(5, Value::Float(7.0));
+    host.frame(201, 61.0);
+    assert_eq!(host.outbox.len(), 1);
+}
+
 #[test]
 fn snapshot_seeds_values_without_echo() {
     let (mut host, mut crew) = pair(&[0, 1]);

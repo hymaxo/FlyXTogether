@@ -86,15 +86,6 @@ epsilon = 0.002
 dataref = "sim/cockpit2/controls/speedbrake_ratio"
 epsilon = 0.002
 [[shared]]
-dataref = "sim/cockpit2/controls/elevator_trim"
-epsilon = 0.001
-[[shared]]
-dataref = "sim/cockpit2/controls/aileron_trim"
-epsilon = 0.001
-[[shared]]
-dataref = "sim/cockpit2/controls/rudder_trim"
-epsilon = 0.001
-[[shared]]
 dataref = "sim/cockpit2/controls/parking_brake_ratio"
 epsilon = 0.01
 [[shared]]
@@ -193,12 +184,20 @@ epsilon = 0.01
 [[state]]
 dataref = "sim/flightmodel/weight/m_fixed"
 epsilon = 0.01
+# Both alternators charge at nearly the same rate, but small differences
+# add up over a flight and decide whether a weak battery still cranks.
+[[state]]
+dataref = "sim/cockpit/electrical/battery_charge_watt_hr"
+index = [0, 1]
+epsilon = 0.05
 
 # --------------------------------------------------------- pilot flying
 # The pilot flying's flight-control inputs, played out with the motion and
-# written in the other cockpit every frame. The totals include the
-# autopilot's servos, which only act on the pilot flying's aircraft; many
-# cockpits animate the yoke from them. Magnetic headings (`*_deg_mag_*`)
+# written in the other cockpit every frame (before and after its flight
+# model). The totals include the autopilot's servos, which only act on the
+# pilot flying's aircraft; many cockpits animate the yoke from them. Trim is
+# the pilot flying's too, and the autopilot moves it: the pilot monitoring's
+# trim wheel follows, and its trim buttons are forwarded as commands. Magnetic headings (`*_deg_mag_*`)
 # would be interpolated the short way around the compass. At most 32 after
 # per-engine expansion.
 [[input]]
@@ -207,6 +206,12 @@ dataref = "sim/cockpit2/controls/total_pitch_ratio"
 dataref = "sim/cockpit2/controls/total_roll_ratio"
 [[input]]
 dataref = "sim/cockpit2/controls/total_heading_ratio"
+[[input]]
+dataref = "sim/cockpit2/controls/elevator_trim"
+[[input]]
+dataref = "sim/cockpit2/controls/aileron_trim"
+[[input]]
+dataref = "sim/cockpit2/controls/rudder_trim"
 [[input]]
 dataref = "sim/cockpit2/controls/yoke_pitch_ratio"
 [[input]]
@@ -220,11 +225,18 @@ dataref = "sim/cockpit2/controls/right_brake_ratio"
 [[input]]
 dataref = "sim/cockpit2/engine/actuators/throttle_ratio"
 index = "per_engine"
+# The throttle the engine uses. With override_throttles the pilot
+# monitoring's engines take it from here, not from the lever above.
+[[input]]
+dataref = "sim/flightmodel/engine/ENGN_thro_use"
+index = "per_engine"
 
 # Set on the pilot monitoring's seat while it follows, so its own hardware
 # and autopilot do not fight the inputs it is given.
 [[monitor_override]]
 dataref = "sim/operation/override/override_joystick"
+[[monitor_override]]
+dataref = "sim/operation/override/override_joystick_{pitch,roll,heading}"
 [[monitor_override]]
 dataref = "sim/operation/override/override_throttles"
 [[monitor_override]]

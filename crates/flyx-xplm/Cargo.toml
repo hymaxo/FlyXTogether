@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+arboard = { version = "3.6", default-features = false }
 imgui = "0.12"
 thiserror = "2"
 tracing = "0.1"

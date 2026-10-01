@@ -31,10 +31,19 @@ for one aircraft and mark it as verified.
 | `state` | A simulated value owned by the pilot flying that would slowly drift apart between the seats, such as fuel. It is copied to the other seat twice a second. |
 | `local` | Never synced: views, popups, sound volumes and so on. |
 
-The pilot flying's yoke, pedals, toe brakes and throttles (`input`) are
-handled by the built-in list, together with the overrides the other seat
-uses while following (`monitor_override`). Profiles rarely need to touch
-them.
+The pilot flying's yoke, pedals, toe brakes, throttles and trim (`input`)
+are handled by the built-in list, together with the overrides the pilot
+monitoring uses while following (`monitor_override`). They are the pilot
+flying's alone: the pilot monitoring's joystick and throttle do nothing,
+and its trim wheel follows the pilot flying's (and the autopilot's) trim.
+Trim buttons are cockpit commands, so they still work from either seat.
+Profiles rarely need to touch them.
+
+A `shared` value that keeps changing by itself on the pilot flying's
+simulator, for example because the autopilot drives it, is noticed after
+about 20 seconds. From then on the pilot monitoring follows the pilot
+flying's value instead of syncing changes both ways, until the controls
+change hands.
 
 Instruments need no entries at all. The following seat's flight model
 keeps running, with its aircraft put where the pilot flying's is every

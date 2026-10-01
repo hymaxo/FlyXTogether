@@ -394,8 +394,11 @@ impl Cockpit {
                 (state.phi_deg / 40.0).clamp(-1.0, 1.0)
             } else if name.contains("pitch_ratio") {
                 (0.05 + state.theta_deg / 20.0).clamp(-1.0, 1.0)
-            } else if name.contains("throttle_ratio") {
+            } else if name.contains("throttle_ratio") || name.contains("ENGN_thro_use") {
                 throttle
+            } else if name.contains("elevator_trim") && !state.on_ground {
+                // An autopilot trimming slowly up and down.
+                (0.1 * (state.sim_time / 15.0).sin()) as f32
             } else {
                 0.0
             };

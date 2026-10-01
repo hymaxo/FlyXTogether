@@ -56,9 +56,15 @@ pub struct CockpitSync {
     /// Flight-control inputs, in definition order.
     inputs: Vec<u16>,
     overrides: Vec<u16>,
-    /// The pilot flying's latest systems state, written every frame
-    /// while following: the follower's own systems would pull them back.
+    /// The pilot flying's latest systems state (and the shared values its
+    /// simulator drives), written every frame while this seat is the pilot
+    /// monitoring: its own systems would pull them back.
     state: BTreeMap<u16, Value>,
+    /// Pilot monitoring: the input values last written, to notice this
+    /// simulator changing them between frames (connected hardware).
+    written_inputs: BTreeMap<u16, f32>,
+    /// Inputs already reported as changed by this simulator.
+    reported_inputs: Vec<u16>,
     /// Entries not resolved yet, retried for a while after loading.
     pending: Vec<u16>,
     next_resolve: f64,
@@ -117,6 +123,8 @@ impl CockpitSync {
             inputs,
             overrides,
             state: BTreeMap::new(),
+            written_inputs: BTreeMap::new(),
+            reported_inputs: Vec::new(),
             pending,
             next_resolve: 0.0,
             active: None,
@@ -160,27 +168,51 @@ impl CockpitSync {
                 Target::Command(name) => match Command::find(name) {
                     Some(command) => {
                         self.commands.insert(key, command);
-                        let pressed = self.pressed.clone();
-                        let replaying = self.replaying.clone();
-                        self.handlers
-                            .push(CommandHandler::register(command, true, move |phase| {
-                                if !replaying.get() {
-                                    let phase = match phase {
-                                        Phase::Begin => HandlerPhase::Begin,
-                                        Phase::Continue => HandlerPhase::Continue,
-                                        Phase::End => HandlerPhase::End,
-                                    };
-                                    if phase != HandlerPhase::Continue {
-                                        pressed.borrow_mut().push((key, phase));
-                                    }
-                                }
-                                true
-                            }));
+                        let handler = self.handler(key, command);
+                        self.handlers.push(handler);
                     }
                     None => self.pending.push(key),
                 },
             }
         }
+    }
+
+    /// Notes local phases of a cockpit command, to forward them.
+    fn handler(&self, key: u16, command: Command) -> CommandHandler {
+        let pressed = self.pressed.clone();
+        let replaying = self.replaying.clone();
+        CommandHandler::register(command, true, move |phase| {
+            if !replaying.get() {
+                let phase = match phase {
+                    Phase::Begin => HandlerPhase::Begin,
+                    Phase::Continue => HandlerPhase::Continue,
+                    Phase::End => HandlerPhase::End,
+                };
+                if phase != HandlerPhase::Continue {
+                    pressed.borrow_mut().push((key, phase));
+                }
+            }
+            true
+        })
+    }
+
+    /// Registers every command handler again, so that it runs before the
+    /// aircraft's own. X-Plane runs the most recently registered handler
+    /// first, and aircraft scripts that replace a command (xlua's
+    /// `replace_command`, such as the C172's fuel cutoff on
+    /// `sim/starters/shut_down`) swallow it; they load after the
+    /// aircraft-loaded message, after the handlers were first registered.
+    fn reregister_handlers(&mut self) {
+        self.handlers.clear();
+        let commands: Vec<(u16, Command)> = self.commands.iter().map(|(&k, &c)| (k, c)).collect();
+        self.handlers = commands
+            .into_iter()
+            .map(|(key, command)| self.handler(key, command))
+            .collect();
+        debug!(
+            count = self.handlers.len(),
+            "command handlers registered again"
+        );
     }
 
     /// Retries unresolved entries every [`RESOLVE_INTERVAL_S`] for
@@ -199,6 +231,8 @@ impl CockpitSync {
                 pending = self.pending.len(),
                 "late sync definition entries resolved"
             );
+            // The aircraft's scripts loaded and may have replaced commands.
+            self.reregister_handlers();
         }
         if now >= RESOLVE_FOR_S && !self.pending.is_empty() {
             let names: Vec<String> = self.pending.iter().map(|&k| self.name(k)).collect();
@@ -250,6 +284,8 @@ impl CockpitSync {
 
     /// A session connected. The host sends the join snapshot.
     pub fn connect(&mut self, seat: Seat, net: &NetHandle) {
+        // By now the aircraft's scripts have loaded.
+        self.reregister_handlers();
         let shared: Vec<(u16, f32)> = self
             .definition
             .of_class(Class::Shared)
@@ -325,8 +361,10 @@ impl CockpitSync {
             return;
         }
         self.monitoring = on;
-        if !on {
-            self.state.clear();
+        self.state.clear();
+        self.written_inputs.clear();
+        if let Some(active) = self.active.as_mut() {
+            active.register.unmute_all();
         }
         for &key in &self.overrides {
             self.write(key, Value::Int(on as i32));
@@ -364,9 +402,30 @@ impl CockpitSync {
 
     /// Pilot monitoring, every frame: shows the pilot flying's inputs and
     /// holds its systems state.
-    pub fn write_inputs(&self, inputs: &[f32; MAX_INPUTS]) {
+    /// It runs before and after the flight model: before, so this seat's
+    /// flight model and engines use the pilot flying's inputs; after, so
+    /// the cockpit shows them. `check` (before the flight model) logs once
+    /// per input when something in this simulator, such as a connected
+    /// joystick, changed it since the last write.
+    pub fn write_inputs(&mut self, inputs: &[f32; MAX_INPUTS], check: bool) {
         for (&key, &value) in self.inputs.iter().zip(inputs) {
+            if check
+                && let (Some(&written), Some(r)) =
+                    (self.written_inputs.get(&key), self.datarefs.get(&key))
+                && let XValue::Float(now) = r.get()
+                && (now - written).abs() > 0.02
+                && !self.reported_inputs.contains(&key)
+            {
+                self.reported_inputs.push(key);
+                warn!(
+                    dataref = %self.name(key),
+                    written,
+                    found = now,
+                    "pilot monitoring: an input was changed by this simulator between frames"
+                );
+            }
             self.write(key, Value::Float(value));
+            self.written_inputs.insert(key, value);
         }
         for (&key, &value) in &self.state {
             self.write(key, value);
@@ -428,8 +487,10 @@ impl CockpitSync {
             && now >= active.next_systems
         {
             active.next_systems = now + SYSTEMS_INTERVAL_S;
+            // Shared values this simulator drives (muted) go with the state.
             let state = self
                 .keys(Class::State)
+                .chain(active.register.muted_keys())
                 .filter_map(|k| self.read(k).map(|v| (k, v)))
                 .collect();
             let repair = active.repair.next_chunk(&active.register.snapshot());
@@ -483,6 +544,7 @@ impl CockpitSync {
                     && let Some(command) = self.commands.get(&key)
                 {
                     active.register.note_replay(frame);
+                    debug!(command = %self.name(key), ?phase, "replaying");
                     self.replaying.set(true);
                     match phase {
                         CommandPhase::Begin => command.begin(),
@@ -503,20 +565,28 @@ impl CockpitSync {
     /// Systems state and a drift-repair slice from the pilot flying.
     pub fn systems(&mut self, state: &[(u16, Value)], repair: &[(u16, Value)], net: &NetHandle) {
         let now = self.now();
-        for &(key, value) in state {
-            let is_state = self
-                .definition
-                .entries
-                .get(key as usize)
-                .is_some_and(|e| e.class == Class::State);
-            if is_state {
-                self.state.insert(key, value);
-                self.write(key, value);
-            }
-        }
         let Some(active) = self.active.as_mut() else {
             return;
         };
+        for &(key, value) in state {
+            match self.definition.entries.get(key as usize).map(|e| e.class) {
+                Some(Class::State) => {}
+                // A shared value the pilot flying's simulator drives: follow
+                // it instead of sending this seat's own changes.
+                Some(Class::Shared) => {
+                    if !active.register.is_muted(key) {
+                        info!(dataref = %self.definition.entries[key as usize].target,
+                            "following the pilot flying's value: its simulator drives it");
+                        active.register.mute(key);
+                    }
+                }
+                _ => continue,
+            }
+            self.state.insert(key, value);
+            if let Some(r) = self.datarefs.get(&key).filter(|r| r.is_writable()) {
+                r.set(to_x(value));
+            }
+        }
         let datarefs = &self.datarefs;
         let entries = &self.definition.entries;
         let selection = active.repair.select(now, repair, |key| {
@@ -532,8 +602,11 @@ impl CockpitSync {
         }
         let mut actions = Vec::new();
         for (key, value) in selection.repair {
-            info!(dataref = %entries[key as usize].target, ?value, "drift repair");
-            actions.extend(active.register.repair(key, value, now));
+            let repaired = active.register.repair(key, value, now);
+            if !repaired.is_empty() {
+                info!(dataref = %entries[key as usize].target, ?value, "drift repair");
+            }
+            actions.extend(repaired);
         }
         self.apply(actions, net);
     }

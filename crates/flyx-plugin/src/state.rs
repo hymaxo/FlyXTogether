@@ -50,6 +50,8 @@ pub(crate) struct Enabled {
     _menu: PluginsMenu,
     menu_items: Vec<MenuItem>,
     frame_loop: FlightLoop,
+    /// Writes the pilot flying's inputs before the flight model runs.
+    before_loop: FlightLoop,
     runtime: Option<Runtime>,
     net: Option<NetHandle>,
     session: Session,
@@ -178,12 +180,15 @@ pub fn enable(plugin_root: PathBuf) -> bool {
 
     let frame_loop = FlightLoop::new(Phase::AfterFlightModel, on_frame);
     frame_loop.schedule(NextCall::Frames(1));
+    let before_loop = FlightLoop::new(Phase::BeforeFlightModel, on_before_flight_model);
+    before_loop.schedule(NextCall::Frames(1));
 
     STATE.with(|s| {
         *s.borrow_mut() = Some(Enabled {
             _menu: menu,
             menu_items,
             frame_loop,
+            before_loop,
             runtime: Some(runtime),
             net: Some(net),
             session: Session::new(VERSION),
@@ -221,6 +226,7 @@ pub fn disable() {
     apply(&mut enabled, outcome);
     guard::clear_teardown();
     enabled.frame_loop.schedule(NextCall::Stop);
+    enabled.before_loop.schedule(NextCall::Stop);
     if let Some(net) = enabled.net.take() {
         // Blocks briefly so the goodbye reaches the peer and the port is
         // released before the runtime stops.
@@ -268,6 +274,22 @@ fn with_state(f: impl FnOnce(&mut Enabled)) {
             f(enabled);
         }
     });
+}
+
+/// Pilot monitoring: the flight model runs with the pilot flying's inputs
+/// (the latest played-out ones), whatever this seat's hardware did.
+fn on_before_flight_model(_tick: Tick) -> NextCall {
+    with_state(|e| {
+        if let Some(controls) = e
+            .follower
+            .as_ref()
+            .and_then(|f| f.last_pose())
+            .map(|pose| pose.controls)
+        {
+            e.cockpit.write_inputs(&controls, true);
+        }
+    });
+    NextCall::Frames(1)
 }
 
 fn on_frame(tick: Tick) -> NextCall {
@@ -341,7 +363,7 @@ fn on_frame(tick: Tick) -> NextCall {
             }
             if let Some(f) = e.follower.as_mut() {
                 if let Some(pose) = f.frame(refs) {
-                    e.cockpit.write_inputs(&pose.controls);
+                    e.cockpit.write_inputs(&pose.controls, false);
                 }
                 for (engine, begin) in f.take_starter_requests() {
                     e.cockpit.run_starter(engine, begin);
