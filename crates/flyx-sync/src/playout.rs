@@ -94,6 +94,8 @@ pub struct Playout {
     handover_started: Option<f64>,
     /// The stream is shown ahead by `lead` seconds, decaying to zero.
     lead: Option<Lead>,
+    /// Bit `i` set: `controls[i]` is a heading in degrees.
+    heading_inputs: u32,
 }
 
 /// Lead after a handover (see [`Playout::after_handover`]).
@@ -132,6 +134,16 @@ impl Playout {
             handover_from: None,
             handover_started: None,
             lead: None,
+            heading_inputs: 0,
+        }
+    }
+
+    /// Marks the per-frame values (bit `i` for `controls[i]`) that are
+    /// headings in degrees, interpolated the short way around the compass.
+    pub fn with_heading_inputs(self, mask: u32) -> Self {
+        Self {
+            heading_inputs: mask,
+            ..self
         }
     }
 
@@ -409,7 +421,14 @@ impl Playout {
         out.height_agl_m = lerp(a.height_agl_m, b.height_agl_m, u as f32);
         out.on_ground = if u < 0.5 { a.on_ground } else { b.on_ground };
         out.visuals = lerp_visuals(&a.visuals, &b.visuals, u as f32);
-        out.controls = std::array::from_fn(|i| lerp_value(a.controls[i], b.controls[i], u as f32));
+        out.controls = std::array::from_fn(|i| {
+            let (a, b, u) = (a.controls[i], b.controls[i], u as f32);
+            if self.heading_inputs & (1 << i) != 0 {
+                lerp_heading(a, b, u)
+            } else {
+                lerp(a, b, u)
+            }
+        });
         out
     }
 }
@@ -519,10 +538,8 @@ fn lerp_parts(a: &[f32; WING_PARTS], b: &[f32; WING_PARTS], u: f32) -> [f32; WIN
     std::array::from_fn(|i| lerp(a[i], b[i], u))
 }
 
-/// Interpolates a per-frame value. Values more than 180 apart are headings
-/// crossing north (ratios and attitudes never jump that far between two
-/// samples), so they take the short way around the circle.
-fn lerp_value(a: f32, b: f32, u: f32) -> f32 {
+/// Interpolates a heading in degrees the short way around the compass.
+fn lerp_heading(a: f32, b: f32, u: f32) -> f32 {
     let d = b - a;
     if d.abs() <= 180.0 {
         return lerp(a, b, u);
@@ -829,10 +846,32 @@ mod tests {
 
     #[test]
     fn headings_interpolate_across_north() {
-        assert!((lerp_value(0.2, 0.6, 0.5) - 0.4).abs() < 1e-6);
-        assert!((lerp_value(350.0, 10.0, 0.5) % 360.0).abs() < 1e-3);
-        assert!((lerp_value(10.0, 350.0, 0.25) - 5.0).abs() < 1e-3);
-        assert!((lerp_value(359.0, 1.0, 0.75) - 0.5).abs() < 1e-3);
+        assert!((lerp_heading(20.0, 60.0, 0.5) - 40.0).abs() < 1e-4);
+        assert!((lerp_heading(350.0, 10.0, 0.5) % 360.0).abs() < 1e-3);
+        assert!((lerp_heading(10.0, 350.0, 0.25) - 5.0).abs() < 1e-3);
+        assert!((lerp_heading(359.0, 1.0, 0.75) - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn only_marked_inputs_wrap_around_north() {
+        let mut p = Playout::new().with_heading_inputs(1);
+        let sample = |seq: u32| FlightState {
+            seq,
+            sim_time: seq as f64 / 10.0,
+            ..FlightState::default()
+        };
+        let mut a = sample(0);
+        let mut b = sample(1);
+        a.controls[0] = 350.0;
+        b.controls[0] = 10.0;
+        // A vertical speed jumping by more than 180 fpm is not a heading.
+        a.controls[1] = 0.0;
+        b.controls[1] = 400.0;
+        p.push(a, 0.0);
+        p.push(b, 0.1);
+        let out = p.interpolate(0.05);
+        assert!((out.controls[0] % 360.0).abs() < 1e-3);
+        assert!((out.controls[1] - 200.0).abs() < 1e-3);
     }
 
     // Scenario: Samples from the previous pilot flying.

@@ -335,14 +335,21 @@ impl Follower {
     /// Starts following samples of control epoch `control_epoch`. After a
     /// handover (`after_handover`), this seat flew until now, and the
     /// playout eases from its own aircraft into the new stream.
-    pub fn start(refs: &Refs, control_epoch: u32, after_handover: bool) -> Self {
+    /// `heading_inputs` marks the per-frame values that are headings.
+    pub fn start(
+        refs: &Refs,
+        control_epoch: u32,
+        after_handover: bool,
+        heading_inputs: u32,
+    ) -> Self {
         let probe = TerrainProbe::new();
         let resting_height = refs.resting_height(&probe);
         let playout = if after_handover {
             Playout::after_handover(control_epoch, refs.sample(control_epoch, 0, 0.0, &probe))
         } else {
             Playout::for_epoch(control_epoch)
-        };
+        }
+        .with_heading_inputs(heading_inputs);
         refs.set_overrides(true);
         if let Some(h) = resting_height {
             info!(height_m = h, "measured resting height on the ground");

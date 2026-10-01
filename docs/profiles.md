@@ -34,8 +34,9 @@ for one aircraft and mark it as verified.
 The pilot flying's per-frame values (`input`) are handled by the built-in
 list, together with the overrides the other seat uses while following
 (`monitor_override`). The per-frame values are the yoke, pedals, toe brakes
-and throttles, plus the gyro instrument readings, because the following
-seat's own gyros stop while it follows. Profiles rarely need to touch
+and throttles, plus the gyro and air-data instrument readings (attitude,
+heading, turn coordinator, altimeter, vertical speed), because the following
+seat's flight model, which computes them, is frozen while it follows. Profiles rarely need to touch
 them.
 
 A command and its result usually both sync. For example, the

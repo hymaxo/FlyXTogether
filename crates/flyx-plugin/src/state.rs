@@ -469,7 +469,8 @@ fn apply(e: &mut Enabled, outcome: Outcome) {
                 after_handover,
             } => {
                 if let Some(refs) = &e.refs {
-                    e.follower = Some(Follower::start(refs, epoch, after_handover));
+                    let headings = e.cockpit.heading_inputs();
+                    e.follower = Some(Follower::start(refs, epoch, after_handover, headings));
                 }
                 e.cockpit.set_monitoring(true);
             }

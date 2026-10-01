@@ -222,8 +222,10 @@ epsilon = 0.00001
 # --------------------------------------------------------- pilot flying
 # Per-frame values of the pilot flying, played out with the motion and
 # written in the other cockpit every frame: flight-control inputs, and the
-# gyro instrument readings (the following seat's own gyros stop while its
-# flight model is frozen). At most 32 after per-engine expansion.
+# gyro and air-data instrument readings (the following seat computes them in
+# its flight model, which is frozen while it follows). Magnetic headings
+# (`*_deg_mag_*`) are interpolated the short way around the compass. At most
+# 32 after per-engine expansion.
 [[input]]
 dataref = "sim/cockpit2/controls/total_pitch_ratio"
 [[input]]
@@ -252,6 +254,10 @@ dataref = "sim/cockpit2/gauges/indicators/roll_AHARS_deg_pilot"
 dataref = "sim/cockpit2/gauges/indicators/turn_rate_roll_deg_pilot"
 [[input]]
 dataref = "sim/cockpit2/gauges/indicators/slip_deg"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/altitude_ft_{pilot,copilot}"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/vvi_fpm_{pilot,copilot}"
 [[input]]
 dataref = "sim/cockpit2/controls/yoke_pitch_ratio"
 [[input]]

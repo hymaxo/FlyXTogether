@@ -317,6 +317,15 @@ impl CockpitSync {
         );
     }
 
+    /// Which per-frame value slots are headings (bit `i` for slot `i`).
+    pub fn heading_inputs(&self) -> u32 {
+        self.inputs
+            .iter()
+            .enumerate()
+            .filter(|&(_, &key)| self.definition.entries[key as usize].is_heading())
+            .fold(0, |mask, (i, _)| mask | 1 << i)
+    }
+
     /// The pilot flying's flight-control inputs.
     pub fn sample_inputs(&self) -> [f32; MAX_INPUTS] {
         let mut out = [0.0; MAX_INPUTS];

@@ -520,8 +520,8 @@ impl Peer {
 }
 
 /// `from` moved on for `dt` seconds, straight and level.
-/// Rolls and pitches gently around the circuit's steady attitude, so the
-/// other seat's attitude indicator and yoke visibly move.
+/// Rolls, pitches, climbs and descends gently around the circuit's steady
+/// flight, so the other seat's instruments and yoke visibly move.
 fn wobble(s: &mut FlightState, t: f64) {
     use std::f64::consts::TAU;
     let (roll_amp, roll_period) = (12.0, 14.0);
@@ -532,6 +532,11 @@ fn wobble(s: &mut FlightState, t: f64) {
     s.theta_deg += (pitch_amp * pitch.sin()) as f32;
     s.rates_deg[0] += (roll_amp * TAU / roll_period * roll.cos()) as f32;
     s.rates_deg[1] += (pitch_amp * TAU / pitch_period * pitch.cos()) as f32;
+    let (height_amp, height_period) = (30.0, 40.0);
+    let height = TAU * t / height_period;
+    s.elevation_m += height_amp * height.sin();
+    s.height_agl_m += (height_amp * height.sin()) as f32;
+    s.velocity[1] += (height_amp * TAU / height_period * height.cos()) as f32;
 }
 
 fn carry_on(from: &FlightState, dt: f64) -> FlightState {

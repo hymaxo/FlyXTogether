@@ -408,6 +408,10 @@ impl Cockpit {
                 state.theta_deg
             } else if name.contains("indicators/roll_") {
                 state.phi_deg
+            } else if name.contains("indicators/altitude_ft") {
+                (state.elevation_m * 3.280_84) as f32
+            } else if name.contains("indicators/vvi_fpm") {
+                state.velocity[1] * 196.85
             } else if name.contains("turn_rate_roll") {
                 state.phi_deg / 2.0
             } else {

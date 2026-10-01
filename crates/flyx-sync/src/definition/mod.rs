@@ -72,6 +72,14 @@ pub struct Entry {
     pub epsilon: f32,
 }
 
+impl Entry {
+    /// Whether the value is a magnetic heading in degrees, which wraps
+    /// around at 360.
+    pub fn is_heading(&self) -> bool {
+        matches!(&self.target, Target::Dataref(d) if d.name.contains("_deg_mag"))
+    }
+}
+
 /// Default for float values without an `epsilon`.
 pub const DEFAULT_EPSILON: f32 = 1e-4;
 
