@@ -60,7 +60,7 @@ pub(crate) async fn run(
     let Joined {
         endpoint,
         conn,
-        send,
+        mut send,
         reader,
         ..
     } = joined;
@@ -68,23 +68,19 @@ pub(crate) async fn run(
     let reason = loop {
         tokio::select! {
             datagram = conn.read_datagram() => match datagram {
-                Ok(bytes) => match Datagram::decode(&bytes) {
-                    Ok(Datagram::FlightState(state)) => out.sample(state),
-                    Ok(other) => debug!(?other, "ignoring datagram from host"),
-                    Err(e) => debug!(%e, "bad datagram"),
-                },
+                Ok(bytes) => out.datagram(&bytes),
                 Err(e) => {
                     out.session(Event::HostGone(gone_from(&e)));
                     break None;
                 }
             },
             input = control.recv() => match input {
-                Some(ControlIn::Message(Control::Paused(paused))) => out.paused(paused),
-                Some(ControlIn::Message(Control::Bye(reason))) => {
-                    out.session(Event::HostGone(PeerGone::Said(reason)));
-                    break None;
+                Some(ControlIn::Message(message)) => {
+                    if let Some(reason) = out.control(message, false) {
+                        out.session(Event::HostGone(PeerGone::Said(reason)));
+                        break None;
+                    }
                 }
-                Some(ControlIn::Message(other)) => debug!(?other, "ignoring message from host"),
                 Some(ControlIn::Ended(gone)) => {
                     out.session(Event::HostGone(gone));
                     break None;
@@ -95,9 +91,15 @@ pub(crate) async fn run(
                 }
             },
             command = commands.recv() => match command {
+                Some(ActivityCommand::FlightState(state)) => {
+                    send_datagram(&conn, &Datagram::FlightState(state));
+                }
+                Some(ActivityCommand::Datagram(datagram)) => send_datagram(&conn, &datagram),
+                Some(ActivityCommand::Control(message)) => {
+                    let _ = control::send(&mut send, &message).await;
+                }
                 Some(ActivityCommand::Disconnect(reason)) => break Some(reason),
                 None => break Some(flyx_protocol::ByeReason::PluginStopped),
-                Some(_) => {}
             },
         }
     };
@@ -106,6 +108,12 @@ pub(crate) async fn run(
         None => conn.close(VarInt::from_u32(0), b""),
     }
     let _ = tokio::time::timeout(CLOSE_FLUSH, endpoint.wait_idle()).await;
+}
+
+pub(crate) fn send_datagram(conn: &Connection, datagram: &Datagram) {
+    if let Err(e) = conn.send_datagram(datagram.encode().into()) {
+        debug!(%e, "datagram not sent");
+    }
 }
 
 async fn connect_and_join(

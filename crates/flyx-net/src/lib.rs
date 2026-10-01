@@ -14,9 +14,9 @@ mod join;
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
-use flyx_protocol::{AircraftId, ByeReason, FlightState};
+use flyx_protocol::{AircraftId, ByeReason, Control, Datagram, FlightState, Value};
 use flyx_sync::Password;
-use flyx_sync::session::Event;
+use flyx_sync::session::{Controls, Event};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -58,18 +58,39 @@ pub enum NetCommand {
     },
     /// End the current session or attempt, telling the peer why.
     Disconnect { reason: ByeReason },
-    /// Authority: send one flight-state sample to the follower.
+    /// Pilot flying: send one flight-state sample to the other seat.
     SendFlightState(FlightState),
-    /// Authority: tell the follower the simulator paused or resumed.
+    /// Pilot flying: tell the other seat the simulator paused or resumed.
     SendPaused(bool),
+    /// Host: tell the crew who has the controls.
+    SendControls(Controls),
+    /// Crew: ask the host for the controls.
+    SendTakeControls { seen_epoch: u32 },
+    /// Send a cockpit message (`Change`, `Set`, `Command` or `Snapshot`).
+    SendCockpit(Control),
+    /// Pilot flying: send systems state and a drift-repair slice.
+    SendSystems {
+        epoch: u32,
+        state: Vec<(u16, Value)>,
+        repair: Vec<(u16, Value)>,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NetEvent {
     /// Feed into `flyx_sync::session::Session`.
     Session(Event),
-    /// Follower: the authority paused or resumed.
+    /// Pilot monitoring: the pilot flying paused or resumed.
     Paused(bool),
+    /// A cockpit message from the other seat (`Change`, `Set`, `Command` or
+    /// `Snapshot`).
+    Cockpit(Control),
+    /// Systems state and a drift-repair slice from the pilot flying.
+    Systems {
+        epoch: u32,
+        state: Vec<(u16, Value)>,
+        repair: Vec<(u16, Value)>,
+    },
 }
 
 /// A flight-state sample with the moment it arrived, for jitter estimates.
@@ -86,7 +107,10 @@ pub struct ReceivedState {
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum ActivityCommand {
     FlightState(FlightState),
-    Paused(bool),
+    /// Any other datagram (systems state).
+    Datagram(Datagram),
+    /// A control message for the connected peer.
+    Control(Control),
     Disconnect(ByeReason),
 }
 
@@ -110,6 +134,53 @@ impl Outputs {
             state,
             received_at: Instant::now(),
         });
+    }
+
+    /// Routes a datagram from the connected peer.
+    pub(crate) fn datagram(&self, bytes: &[u8]) {
+        match Datagram::decode(bytes) {
+            Ok(Datagram::FlightState(state)) => self.sample(state),
+            Ok(Datagram::Systems {
+                epoch,
+                state,
+                repair,
+            }) => {
+                let _ = self.events.send(NetEvent::Systems {
+                    epoch,
+                    state,
+                    repair,
+                });
+            }
+            Err(e) => tracing::debug!(%e, "bad datagram"),
+        }
+    }
+
+    /// Routes an in-session control message from the connected peer.
+    /// `host` is whether this seat hosts. Returns the reason if the peer
+    /// said goodbye.
+    pub(crate) fn control(&self, message: Control, host: bool) -> Option<ByeReason> {
+        match message {
+            Control::Bye(reason) => return Some(reason),
+            Control::Paused(paused) => self.paused(paused),
+            Control::TakeControls { seen_epoch } if host => {
+                self.session(Event::TakeControlsReceived { seen_epoch })
+            }
+            Control::Controls {
+                epoch,
+                pilot_flying,
+            } if !host => self.session(Event::ControlsReceived(Controls {
+                epoch,
+                pilot_flying,
+            })),
+            message @ (Control::Change { .. }
+            | Control::Set { .. }
+            | Control::Command { .. }
+            | Control::Snapshot { .. }) => {
+                let _ = self.events.send(NetEvent::Cockpit(message));
+            }
+            other => tracing::debug!(?other, "ignoring message from the other seat"),
+        }
+        None
     }
 }
 
@@ -216,14 +287,42 @@ async fn manager(mut commands: mpsc::UnboundedReceiver<NetCommand>, out: Outputs
                     let _ = a.commands.send(ActivityCommand::FlightState(state));
                 }
             }
-            NetCommand::SendPaused(paused) => {
+            NetCommand::SendPaused(paused) => send_control(&activity, Control::Paused(paused)),
+            NetCommand::SendControls(controls) => send_control(
+                &activity,
+                Control::Controls {
+                    epoch: controls.epoch,
+                    pilot_flying: controls.pilot_flying,
+                },
+            ),
+            NetCommand::SendTakeControls { seen_epoch } => {
+                send_control(&activity, Control::TakeControls { seen_epoch })
+            }
+            NetCommand::SendCockpit(message) => send_control(&activity, message),
+            NetCommand::SendSystems {
+                epoch,
+                state,
+                repair,
+            } => {
                 if let Some(a) = &activity {
-                    let _ = a.commands.send(ActivityCommand::Paused(paused));
+                    let _ = a
+                        .commands
+                        .send(ActivityCommand::Datagram(Datagram::Systems {
+                            epoch,
+                            state,
+                            repair,
+                        }));
                 }
             }
         }
     }
     stop(&mut activity, ByeReason::PluginStopped).await;
+}
+
+fn send_control(activity: &Option<Activity>, message: Control) {
+    if let Some(a) = activity {
+        let _ = a.commands.send(ActivityCommand::Control(message));
+    }
 }
 
 async fn stop(activity: &mut Option<Activity>, reason: ByeReason) {

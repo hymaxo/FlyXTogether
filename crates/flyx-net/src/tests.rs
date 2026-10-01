@@ -1,4 +1,4 @@
-//! Loopback tests of hosting, joining and the handshake (tasks 4.4-4.6).
+//! Loopback tests of hosting, joining, the handshake and in-session messages.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use flyx_protocol::{
-    AircraftId, ByeReason, Control, FlightState, KdfParams, PROTOCOL_VERSION, RejectReason,
+    AircraftId, ByeReason, CommandPhase, Control, FlightState, KdfParams, PROTOCOL_VERSION,
+    RejectReason, Seat, Value,
 };
 use flyx_sync::Password;
 use flyx_sync::session::{Event, HostFailure, JoinFailure, PeerGone, Refusal};
@@ -547,4 +548,173 @@ fn clean_name_limits_and_sanitises() {
     assert_eq!(clean_name("A\u{7}lex\n"), "Alex");
     assert_eq!(clean_name(""), "Pilot");
     assert_eq!(clean_name(&"x".repeat(100)).chars().count(), 32);
+}
+
+/// A host and a joined crew, both past `Joined`/`CrewJoined`.
+async fn connected_pair() -> (NetHandle, NetHandle) {
+    let (host_net, port) = host("secret").await;
+    let crew = join(format!("127.0.0.1:{port}"), "secret", "Alex", c172());
+    assert!(matches!(join_result(&crew).await, Event::Joined { .. }));
+    assert!(matches!(
+        crew_event(&host_net).await,
+        Event::CrewJoined { .. }
+    ));
+    (host_net, crew)
+}
+
+/// The next `n` cockpit messages arriving at `net`.
+async fn cockpit_messages(net: &NetHandle, n: usize) -> Vec<Control> {
+    let mut out = Vec::new();
+    while out.len() < n {
+        match wait_event(net, Duration::from_secs(5), |e| {
+            matches!(e, NetEvent::Cockpit(_))
+        })
+        .await
+        {
+            NetEvent::Cockpit(m) => out.push(m),
+            _ => unreachable!(),
+        }
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cockpit_messages_flow_in_order_both_ways() {
+    let (host_net, crew) = connected_pair().await;
+    let from_host = vec![
+        Control::Snapshot {
+            values: vec![(0, Value::Int(1)), (3, Value::Float(0.5))],
+        },
+        Control::Set {
+            key: 3,
+            value: Value::Float(0.75),
+            ack: None,
+        },
+        Control::Command {
+            key: 9,
+            phase: CommandPhase::Begin,
+        },
+        Control::Command {
+            key: 9,
+            phase: CommandPhase::End,
+        },
+    ];
+    for m in &from_host {
+        host_net.send(NetCommand::SendCockpit(m.clone()));
+    }
+    assert_eq!(cockpit_messages(&crew, from_host.len()).await, from_host);
+
+    let from_crew = vec![
+        Control::Change {
+            key: 3,
+            value: Value::Float(0.25),
+            req: 1,
+        },
+        Control::Command {
+            key: 4,
+            phase: CommandPhase::Begin,
+        },
+        Control::Change {
+            key: 3,
+            value: Value::Float(0.3),
+            req: 2,
+        },
+    ];
+    for m in &from_crew {
+        crew.send(NetCommand::SendCockpit(m.clone()));
+    }
+    assert_eq!(
+        cockpit_messages(&host_net, from_crew.len()).await,
+        from_crew
+    );
+
+    host_net.send(NetCommand::SendSystems {
+        epoch: 0,
+        state: vec![(1, Value::Float(40.0))],
+        repair: vec![(3, Value::Float(0.3))],
+    });
+    let systems = wait_event(&crew, Duration::from_secs(5), |e| {
+        matches!(e, NetEvent::Systems { .. })
+    })
+    .await;
+    assert_eq!(
+        systems,
+        NetEvent::Systems {
+            epoch: 0,
+            state: vec![(1, Value::Float(40.0))],
+            repair: vec![(3, Value::Float(0.3))],
+        }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handover_flips_the_stream_direction() {
+    let (host_net, crew) = connected_pair().await;
+
+    crew.send(NetCommand::SendTakeControls { seen_epoch: 0 });
+    let event = wait_event(&host_net, Duration::from_secs(5), |e| {
+        matches!(e, NetEvent::Session(Event::TakeControlsReceived { .. }))
+    })
+    .await;
+    assert_eq!(
+        event,
+        NetEvent::Session(Event::TakeControlsReceived { seen_epoch: 0 })
+    );
+
+    let controls = Controls {
+        epoch: 1,
+        pilot_flying: Seat::Crew,
+    };
+    host_net.send(NetCommand::SendControls(controls));
+    let event = wait_event(&crew, Duration::from_secs(5), |e| {
+        matches!(e, NetEvent::Session(Event::ControlsReceived(_)))
+    })
+    .await;
+    assert_eq!(event, NetEvent::Session(Event::ControlsReceived(controls)));
+
+    // The crew now streams, and the host receives the samples.
+    for seq in 0..5 {
+        crew.send(NetCommand::SendFlightState(FlightState {
+            epoch: 1,
+            seq,
+            ..FlightState::default()
+        }));
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut received = Vec::new();
+    while received.len() < 5 && Instant::now() < deadline {
+        while let Some(s) = host_net.try_sample() {
+            received.push((s.state.epoch, s.state.seq));
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(received, vec![(1, 0), (1, 1), (1, 2), (1, 3), (1, 4)]);
+    crew.send(NetCommand::SendPaused(true));
+    let event = wait_event(&host_net, Duration::from_secs(5), |e| {
+        matches!(e, NetEvent::Paused(_))
+    })
+    .await;
+    assert_eq!(event, NetEvent::Paused(true));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn different_sync_definitions_are_refused_on_both_sides() {
+    let (host_net, port) = host("secret").await;
+    let crew = spawn(&tokio::runtime::Handle::current());
+    crew.send(NetCommand::Join {
+        address: format!("127.0.0.1:{port}"),
+        password: Password::new("secret"),
+        local: LocalInfo {
+            definition: [2; 32],
+            ..local("Alex", c172())
+        },
+    });
+    assert_eq!(
+        join_result(&crew).await,
+        Event::JoinFailed(JoinFailure::Rejected(RejectReason::DefinitionMismatch))
+    );
+    assert_eq!(
+        crew_event(&host_net).await,
+        Event::CrewRefused(Refusal::DefinitionMismatch)
+    );
 }

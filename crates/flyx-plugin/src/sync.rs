@@ -294,7 +294,7 @@ impl Authority {
 /// motion (tasks 5.4-5.6).
 pub struct Follower {
     playout: Playout,
-    epoch: Instant,
+    origin: Instant,
     probe: TerrainProbe,
     last_pose: Option<FlightState>,
     /// This aircraft's own height above ground when parked, measured before
@@ -304,16 +304,20 @@ pub struct Follower {
 }
 
 impl Follower {
-    pub fn start(refs: &Refs) -> Self {
+    /// Starts following samples of control epoch `control_epoch`.
+    pub fn start(refs: &Refs, control_epoch: u32) -> Self {
         let resting_height = refs.resting_height();
         refs.set_overrides(true);
         if let Some(h) = resting_height {
             info!(height_m = h, "measured resting height on the ground");
         }
-        info!("following: flight-model path and control surfaces overridden");
+        info!(
+            control_epoch,
+            "following: flight-model path and control surfaces overridden"
+        );
         Self {
-            playout: Playout::new(),
-            epoch: Instant::now(),
+            playout: Playout::for_epoch(control_epoch),
+            origin: Instant::now(),
             probe: TerrainProbe::new(),
             last_pose: None,
             resting_height,
@@ -323,7 +327,7 @@ impl Follower {
     pub fn push(&mut self, received: ReceivedState) {
         let at = received
             .received_at
-            .saturating_duration_since(self.epoch)
+            .saturating_duration_since(self.origin)
             .as_secs_f64();
         self.playout.push(received.state, at);
     }
@@ -333,7 +337,7 @@ impl Follower {
     }
 
     pub fn frame(&mut self, refs: &Refs) {
-        let now = self.epoch.elapsed().as_secs_f64();
+        let now = self.origin.elapsed().as_secs_f64();
         if let Some(pose) = self.playout.sample(now) {
             refs.apply(&pose, &self.probe, self.resting_height);
             self.last_pose = Some(pose);

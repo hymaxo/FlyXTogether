@@ -12,7 +12,7 @@ use flyx_protocol::{AircraftId, ByeReason, FlightState};
 use flyx_sync::Password;
 use flyx_sync::session::{Effect, Event, Notice, Session};
 use flyx_sync::trajectory::{Kind, Trajectory};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Parser)]
 #[command(version, about = "Headless FlyXTogether peer for development")]
@@ -182,7 +182,11 @@ fn apply(
                 local: local.clone(),
             }),
             Effect::Disconnect { reason } => net.send(NetCommand::Disconnect { reason }),
-            Effect::StartStreaming | Effect::StartFollowing => {
+            Effect::SendControls { controls } => net.send(NetCommand::SendControls(controls)),
+            Effect::SendTakeControls { seen_epoch } => {
+                net.send(NetCommand::SendTakeControls { seen_epoch })
+            }
+            Effect::StartStreaming { .. } | Effect::StartFollowing { .. } => {
                 if let Some(a) = active.as_deref_mut() {
                     *a = true;
                 }
@@ -275,7 +279,11 @@ async fn join_loop(mut session: Session, net: NetHandle, deadline: Option<tokio:
                         NetEvent::Session(e) => {
                             apply(&mut session, e, &net, &password, &local, Some(&mut following));
                         }
-                        NetEvent::Paused(p) => info!(paused = p, "authority pause state"),
+                        NetEvent::Paused(p) => info!(paused = p, "pilot flying pause state"),
+                        NetEvent::Cockpit(message) => info!(?message, "cockpit message"),
+                        NetEvent::Systems { epoch, state, repair } => {
+                            debug!(epoch, state = state.len(), repair = repair.len(), "systems state")
+                        }
                     }
                 }
                 while let Some(sample) = net.try_sample() {

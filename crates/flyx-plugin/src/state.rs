@@ -19,7 +19,7 @@ use flyx_xplm::imgui_window::ImguiWindow;
 use flyx_xplm::menu::PluginsMenu;
 use flyx_xplm::msg::Message;
 use tokio::runtime::Runtime;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::VERSION;
 use crate::logging;
@@ -254,11 +254,13 @@ fn on_frame(tick: Tick) -> NextCall {
                     apply(e, outcome);
                 }
                 NetEvent::Paused(paused) => {
-                    info!(paused, "authority pause state");
+                    info!(paused, "pilot flying pause state");
                     if let Some(f) = e.follower.as_mut() {
                         f.set_paused(paused);
                     }
                 }
+                NetEvent::Cockpit(message) => debug!(?message, "cockpit message"),
+                NetEvent::Systems { epoch, .. } => debug!(epoch, "systems state"),
             }
         }
         // Samples are only used while following; otherwise they are dropped.
@@ -383,12 +385,16 @@ fn apply(e: &mut Enabled, outcome: Outcome) {
                 },
             ),
             Effect::Disconnect { reason } => send(e, NetCommand::Disconnect { reason }),
-            Effect::StartStreaming => e.authority = Some(Authority::new(0)),
+            Effect::StartStreaming { epoch } => e.authority = Some(Authority::new(epoch)),
             Effect::StopStreaming => e.authority = None,
-            Effect::StartFollowing => {
+            Effect::StartFollowing { epoch, .. } => {
                 if let Some(refs) = &e.refs {
-                    e.follower = Some(Follower::start(refs));
+                    e.follower = Some(Follower::start(refs, epoch));
                 }
+            }
+            Effect::SendControls { controls } => send(e, NetCommand::SendControls(controls)),
+            Effect::SendTakeControls { seen_epoch } => {
+                send(e, NetCommand::SendTakeControls { seen_epoch })
             }
             Effect::StopFollowing => {
                 if let (Some(f), Some(refs)) = (e.follower.take(), &e.refs) {

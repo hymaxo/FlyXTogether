@@ -20,6 +20,7 @@ use crate::control::{
     self, CLOSE_PROTOCOL_ERROR, CLOSE_REJECTED, ControlIn, ControlReader, close_code,
 };
 use crate::endpoint::{self, ListenError};
+use crate::join::send_datagram;
 use crate::{ActivityCommand, CLOSE_FLUSH, HANDSHAKE_TIMEOUT, LocalInfo, Outputs, clean_name};
 
 /// After a wrong password, further attempts from the same address are
@@ -57,11 +58,17 @@ struct Pending {
     name: String,
 }
 
-/// The admitted follower.
+/// The admitted crew.
 struct Crew {
     conn: Connection,
     send: SendStream,
     control: mpsc::UnboundedReceiver<ControlIn>,
+}
+
+/// Something the crew sent.
+enum CrewIn {
+    Datagram(bytes::Bytes),
+    Control(ControlIn),
 }
 
 pub(crate) async fn run(
@@ -136,12 +143,14 @@ pub(crate) async fn run(
             }
             input = next_crew_input(&mut crew) => {
                 let gone = match input {
-                    ControlIn::Message(Control::Bye(reason)) => Some(PeerGone::Said(reason)),
-                    ControlIn::Message(other) => {
-                        debug!(?other, "ignoring message from crew");
+                    CrewIn::Datagram(bytes) => {
+                        out.datagram(&bytes);
                         None
                     }
-                    ControlIn::Ended(gone) => Some(gone),
+                    CrewIn::Control(ControlIn::Message(message)) => {
+                        out.control(message, true).map(PeerGone::Said)
+                    }
+                    CrewIn::Control(ControlIn::Ended(gone)) => Some(gone),
                 };
                 if let Some(gone) = gone
                     && let Some(c) = crew.take()
@@ -154,15 +163,18 @@ pub(crate) async fn run(
             }
             command = commands.recv() => match command {
                 Some(ActivityCommand::FlightState(state)) => {
-                    if let Some(c) = &crew
-                        && let Err(e) = c.conn.send_datagram(Datagram::FlightState(state).encode().into())
-                    {
-                        debug!(%e, "flight state not sent");
+                    if let Some(c) = &crew {
+                        send_datagram(&c.conn, &Datagram::FlightState(state));
                     }
                 }
-                Some(ActivityCommand::Paused(paused)) => {
+                Some(ActivityCommand::Datagram(datagram)) => {
+                    if let Some(c) = &crew {
+                        send_datagram(&c.conn, &datagram);
+                    }
+                }
+                Some(ActivityCommand::Control(message)) => {
                     if let Some(c) = &mut crew {
-                        let _ = control::send(&mut c.send, &Control::Paused(paused)).await;
+                        let _ = control::send(&mut c.send, &message).await;
                     }
                 }
                 Some(ActivityCommand::Disconnect(reason)) => break reason,
@@ -179,14 +191,16 @@ pub(crate) async fn run(
     info!(?reason, "stopped hosting");
 }
 
-async fn next_crew_input(crew: &mut Option<Crew>) -> ControlIn {
-    match crew {
-        Some(c) => c
-            .control
-            .recv()
-            .await
-            .unwrap_or(ControlIn::Ended(PeerGone::Lost)),
-        None => std::future::pending().await,
+/// The next datagram or control message from the crew. A failed
+/// connection is reported by the control stream, so datagram errors only
+/// stop datagram reading.
+async fn next_crew_input(crew: &mut Option<Crew>) -> CrewIn {
+    let Some(c) = crew else {
+        return std::future::pending().await;
+    };
+    tokio::select! {
+        Ok(bytes) = c.conn.read_datagram() => CrewIn::Datagram(bytes),
+        input = c.control.recv() => CrewIn::Control(input.unwrap_or(ControlIn::Ended(PeerGone::Lost))),
     }
 }
 

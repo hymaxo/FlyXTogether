@@ -2,20 +2,29 @@
 //! requests and network events. It owns no sockets and no simulator; it
 //! returns [`Effect`]s for the plugin to carry out and a [`Notice`] to show.
 
-use flyx_protocol::{AircraftId, ByeReason, PROTOCOL_VERSION, RejectReason};
+use flyx_protocol::{AircraftId, ByeReason, PROTOCOL_VERSION, RejectReason, Seat};
 
 use crate::aircraft;
 
 /// Shown on both seats when their sync definitions differ.
-const DEFINITION_MISMATCH: &str = "The aircraft files or profiles differ between the two seats.      Both pilots need the same aircraft version and the same FlyXTogether release.";
+const DEFINITION_MISMATCH: &str = "The aircraft files or profiles differ between the two seats. \
+     Both pilots need the same aircraft version and the same FlyXTogether release.";
 
 /// This seat's role in a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
-    /// Hosts the session; its simulator flies the aircraft.
+    /// The pilot flying: its simulator flies the aircraft.
     Authority,
-    /// Joined the session; follows the authority's aircraft.
+    /// The pilot monitoring: follows the pilot flying's aircraft.
     Follower,
+}
+
+/// Who has the controls, from which control epoch on. The host starts as
+/// the pilot flying; every handover increases the epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Controls {
+    pub epoch: u32,
+    pub pilot_flying: Seat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,11 +52,13 @@ pub enum State {
 }
 
 impl State {
-    /// This seat's role while a session is active.
-    pub fn role(&self) -> Option<Role> {
+    /// This seat and the other seat's name while a session is connected.
+    fn connected(&self) -> Option<(Seat, &str)> {
         match self {
-            State::Hosting { crew: Some(_), .. } => Some(Role::Authority),
-            State::Joined { .. } => Some(Role::Follower),
+            State::Hosting {
+                crew: Some(name), ..
+            } => Some((Seat::Host, name)),
+            State::Joined { host, .. } => Some((Seat::Crew, host)),
             _ => None,
         }
     }
@@ -75,13 +86,28 @@ pub enum Effect {
     Disconnect {
         reason: ByeReason,
     },
-    /// Authority: start sending flight state to the follower.
-    StartStreaming,
+    /// Pilot flying: start sending flight state, stamped with `epoch`.
+    StartStreaming {
+        epoch: u32,
+    },
     StopStreaming,
-    /// Follower: take over the aircraft from the local flight model.
-    StartFollowing,
-    /// Follower: give the aircraft back to the local flight model.
+    /// Pilot monitoring: take over the aircraft from the local flight model
+    /// and follow samples of `epoch`. `after_handover` is set when this
+    /// seat was flying until now, so the follower blends in gently.
+    StartFollowing {
+        epoch: u32,
+        after_handover: bool,
+    },
+    /// Pilot monitoring: give the aircraft back to the local flight model.
     StopFollowing,
+    /// Host: tell the crew who has the controls.
+    SendControls {
+        controls: Controls,
+    },
+    /// Crew: ask the host for the controls.
+    SendTakeControls {
+        seen_epoch: u32,
+    },
 }
 
 /// Why hosting could not start or stopped working.
@@ -163,6 +189,16 @@ pub enum Event {
     },
     JoinFailed(JoinFailure),
     HostGone(PeerGone),
+
+    // Handover.
+    /// The user pressed Take controls (or its command).
+    TakeControlsRequested,
+    /// Host: the crew asks for the controls.
+    TakeControlsReceived {
+        seen_epoch: u32,
+    },
+    /// Crew: the host says who has the controls.
+    ControlsReceived(Controls),
 }
 
 /// Result of handling one event.
@@ -178,6 +214,8 @@ pub struct Outcome {
 #[derive(Debug)]
 pub struct Session {
     state: State,
+    /// Set while a session is connected.
+    controls: Option<Controls>,
     plugin_version: String,
 }
 
@@ -185,6 +223,7 @@ impl Session {
     pub fn new(plugin_version: impl Into<String>) -> Self {
         Self {
             state: State::Idle,
+            controls: None,
             plugin_version: plugin_version.into(),
         }
     }
@@ -193,14 +232,52 @@ impl Session {
         &self.state
     }
 
+    /// Who has the controls, while connected.
+    pub fn controls(&self) -> Option<Controls> {
+        self.controls
+    }
+
+    /// This seat's role while connected.
+    pub fn role(&self) -> Option<Role> {
+        let (me, _) = self.state.connected()?;
+        let controls = self.controls?;
+        Some(if controls.pilot_flying == me {
+            Role::Authority
+        } else {
+            Role::Follower
+        })
+    }
+
+    /// "You have the controls" or "<name> has the controls", while connected.
+    pub fn controls_line(&self) -> Option<String> {
+        let (_, other) = self.state.connected()?;
+        Some(match self.role()? {
+            Role::Authority => "You have the controls".to_owned(),
+            Role::Follower => format!("{other} has the controls"),
+        })
+    }
+
+    /// Whether Take controls does anything right now.
+    pub fn can_take_controls(&self) -> bool {
+        self.role() == Some(Role::Follower)
+    }
+
     pub fn handle(&mut self, event: Event) -> Outcome {
         use Effect::*;
+        match event {
+            Event::TakeControlsRequested => return self.take_controls_requested(),
+            Event::TakeControlsReceived { seen_epoch } => {
+                return self.take_controls_received(seen_epoch);
+            }
+            Event::ControlsReceived(controls) => return self.controls_received(controls),
+            _ => {}
+        }
         let mut out = Outcome::default();
         let state = std::mem::replace(&mut self.state, State::Idle);
         self.state = match (state, event) {
             // Leaving the plugin ends everything.
             (state, Event::PluginStopping) => {
-                out.effects.extend(stop_effects(&state));
+                out.effects.extend(self.stop_effects(&state));
                 if state != State::Idle {
                     out.effects.push(Disconnect {
                         reason: ByeReason::PluginStopped,
@@ -241,7 +318,7 @@ impl Session {
             },
             (State::StartingHost { port }, Event::HostFailed(failure))
             | (State::Hosting { port, .. }, Event::HostFailed(failure)) => {
-                out.effects.push(StopStreaming);
+                out.effects.extend(self.stop_for(Seat::Host));
                 out.effects.push(Disconnect {
                     reason: ByeReason::StoppedHosting,
                 });
@@ -264,7 +341,12 @@ impl Session {
                 Event::CrewJoined { name },
             ) => {
                 out.clear_notice = true;
-                out.effects.push(StartStreaming);
+                let controls = Controls {
+                    epoch: 0,
+                    pilot_flying: Seat::Host,
+                };
+                self.controls = Some(controls);
+                out.effects.push(StartStreaming { epoch: 0 });
                 State::Hosting {
                     port,
                     addresses,
@@ -283,7 +365,7 @@ impl Session {
                 },
                 Event::CrewGone(gone),
             ) => {
-                out.effects.push(StopStreaming);
+                out.effects.extend(self.stop_for(Seat::Host));
                 out.notice = Some(Notice::Info(match gone {
                     PeerGone::Lost => format!("Lost connection to {name}."),
                     PeerGone::Said(ByeReason::AircraftChanged) => {
@@ -304,7 +386,14 @@ impl Session {
             // --- Joining ---
             (State::Joining { address }, Event::Joined { host }) => {
                 out.clear_notice = true;
-                out.effects.push(StartFollowing);
+                self.controls = Some(Controls {
+                    epoch: 0,
+                    pilot_flying: Seat::Host,
+                });
+                out.effects.push(StartFollowing {
+                    epoch: 0,
+                    after_handover: false,
+                });
                 State::Joined { address, host }
             }
             (State::Joining { address }, Event::JoinFailed(failure)) => {
@@ -313,8 +402,8 @@ impl Session {
             }
 
             // --- Joined ---
-            (State::Joined { .. }, Event::HostGone(gone)) => {
-                out.effects.push(StopFollowing);
+            (state @ State::Joined { .. }, Event::HostGone(gone)) => {
+                out.effects.extend(self.stop_effects(&state));
                 out.notice = Some(match gone {
                     PeerGone::Lost => Notice::Error("Lost connection to the host.".into()),
                     PeerGone::Said(ByeReason::AircraftChanged) => {
@@ -331,7 +420,7 @@ impl Session {
             // --- Leaving or changing aircraft, from any active state ---
             (state, Event::LeaveRequested) if state != State::Idle => {
                 out.clear_notice = true;
-                out.effects.extend(stop_effects(&state));
+                out.effects.extend(self.stop_effects(&state));
                 out.effects.push(Disconnect {
                     reason: if matches!(state, State::Hosting { .. } | State::StartingHost { .. }) {
                         ByeReason::StoppedHosting
@@ -342,7 +431,7 @@ impl Session {
                 State::Idle
             }
             (state, Event::AircraftChanged) if state != State::Idle => {
-                out.effects.extend(stop_effects(&state));
+                out.effects.extend(self.stop_effects(&state));
                 out.effects.push(Disconnect {
                     reason: ByeReason::AircraftChanged,
                 });
@@ -355,6 +444,125 @@ impl Session {
             // Anything else is stale or irrelevant in the current state.
             (state, _) => state,
         };
+        if self.state.connected().is_none() {
+            self.controls = None;
+        }
+        out
+    }
+
+    /// Stops streaming or following for a connected state being left: the
+    /// pilot flying keeps flying, the pilot monitoring gets its aircraft back.
+    fn stop_effects(&self, state: &State) -> Vec<Effect> {
+        match state.connected() {
+            Some((me, _)) => self.stop_for(me),
+            None => vec![],
+        }
+    }
+
+    fn stop_for(&self, me: Seat) -> Vec<Effect> {
+        match self.controls {
+            Some(c) if c.pilot_flying == me => vec![Effect::StopStreaming],
+            Some(_) => vec![Effect::StopFollowing],
+            None => vec![],
+        }
+    }
+
+    fn take_controls_requested(&mut self) -> Outcome {
+        let mut out = Outcome::default();
+        let (Some((me, _)), Some(controls)) = (self.state.connected(), self.controls) else {
+            return out;
+        };
+        if controls.pilot_flying == me {
+            return out;
+        }
+        match me {
+            Seat::Host => {
+                let controls = Controls {
+                    epoch: controls.epoch + 1,
+                    pilot_flying: Seat::Host,
+                };
+                self.controls = Some(controls);
+                out.effects = vec![
+                    Effect::StopFollowing,
+                    Effect::StartStreaming {
+                        epoch: controls.epoch,
+                    },
+                    Effect::SendControls { controls },
+                ];
+                out.notice = Some(Notice::Info("You took the controls.".into()));
+            }
+            Seat::Crew => out.effects.push(Effect::SendTakeControls {
+                seen_epoch: controls.epoch,
+            }),
+        }
+        out
+    }
+
+    fn take_controls_received(&mut self, seen_epoch: u32) -> Outcome {
+        let mut out = Outcome::default();
+        let (Some((Seat::Host, crew)), Some(controls)) = (self.state.connected(), self.controls)
+        else {
+            return out;
+        };
+        // A request made before the latest handover is stale: the host
+        // took the controls in the meantime, and keeps them.
+        if seen_epoch != controls.epoch || controls.pilot_flying == Seat::Crew {
+            return out;
+        }
+        let controls = Controls {
+            epoch: controls.epoch + 1,
+            pilot_flying: Seat::Crew,
+        };
+        out.notice = Some(Notice::Info(format!("{crew} took the controls.")));
+        self.controls = Some(controls);
+        out.effects = vec![
+            Effect::StopStreaming,
+            Effect::StartFollowing {
+                epoch: controls.epoch,
+                after_handover: true,
+            },
+            Effect::SendControls { controls },
+        ];
+        out
+    }
+
+    fn controls_received(&mut self, new: Controls) -> Outcome {
+        let mut out = Outcome::default();
+        let (Some((Seat::Crew, host)), Some(old)) = (self.state.connected(), self.controls) else {
+            return out;
+        };
+        if new.epoch <= old.epoch {
+            return out;
+        }
+        let host = host.to_owned();
+        self.controls = Some(new);
+        match (old.pilot_flying, new.pilot_flying) {
+            (Seat::Host, Seat::Crew) => {
+                out.effects = vec![
+                    Effect::StopFollowing,
+                    Effect::StartStreaming { epoch: new.epoch },
+                ];
+                out.notice = Some(Notice::Info("You took the controls.".into()));
+            }
+            (Seat::Crew, Seat::Host) => {
+                out.effects = vec![
+                    Effect::StopStreaming,
+                    Effect::StartFollowing {
+                        epoch: new.epoch,
+                        after_handover: true,
+                    },
+                ];
+                out.notice = Some(Notice::Info(format!("{host} took the controls.")));
+            }
+            // Same pilot flying in a newer epoch: only the epoch changes.
+            (_, Seat::Crew) => out
+                .effects
+                .push(Effect::StartStreaming { epoch: new.epoch }),
+            (_, Seat::Host) => out.effects.push(Effect::StartFollowing {
+                epoch: new.epoch,
+                after_handover: false,
+            }),
+        }
         out
     }
 
@@ -423,15 +631,6 @@ impl Session {
                 RejectReason::NotHosting => "The host is not accepting crew right now.".into(),
             },
         }
-    }
-}
-
-/// Stops streaming or following for the state being left.
-fn stop_effects(state: &State) -> Vec<Effect> {
-    match state {
-        State::Hosting { crew: Some(_), .. } => vec![Effect::StopStreaming],
-        State::Joined { .. } => vec![Effect::StopFollowing],
-        _ => vec![],
     }
 }
 
@@ -524,7 +723,7 @@ mod tests {
                 crew: None
             }
         );
-        assert_eq!(s.state().role(), None);
+        assert_eq!(s.role(), None);
     }
 
     // Scenario: Port unavailable.
@@ -569,7 +768,7 @@ mod tests {
     #[test]
     fn join_and_crew_joined_show_names_and_roles() {
         let host = hosting_with_crew();
-        assert_eq!(host.state().role(), Some(Role::Authority));
+        assert_eq!(host.role(), Some(Role::Authority));
         assert!(matches!(host.state(), State::Hosting { crew: Some(n), .. } if n == "Alex"));
 
         let mut s = session();
@@ -584,8 +783,14 @@ mod tests {
             }]
         );
         let out = s.handle(Event::Joined { host: "Sam".into() });
-        assert_eq!(out.effects, vec![Effect::StartFollowing]);
-        assert_eq!(s.state().role(), Some(Role::Follower));
+        assert_eq!(
+            out.effects,
+            vec![Effect::StartFollowing {
+                epoch: 0,
+                after_handover: false
+            }]
+        );
+        assert_eq!(s.role(), Some(Role::Follower));
     }
 
     #[test]
@@ -594,7 +799,256 @@ mod tests {
         let out = s.handle(Event::CrewJoined {
             name: "Alex".into(),
         });
-        assert_eq!(out.effects, vec![Effect::StartStreaming]);
+        assert_eq!(out.effects, vec![Effect::StartStreaming { epoch: 0 }]);
+    }
+
+    fn controls(epoch: u32, pilot_flying: Seat) -> Controls {
+        Controls {
+            epoch,
+            pilot_flying,
+        }
+    }
+
+    // Scenario: After joining (control-handover).
+    #[test]
+    fn host_has_the_controls_after_joining() {
+        let host = hosting_with_crew();
+        assert_eq!(
+            host.controls_line().as_deref(),
+            Some("You have the controls")
+        );
+        assert!(!host.can_take_controls());
+        let crew = joined();
+        assert_eq!(
+            crew.controls_line().as_deref(),
+            Some("Sam has the controls")
+        );
+        assert!(crew.can_take_controls());
+        assert_eq!(session().controls_line(), None);
+    }
+
+    // Scenario: Crew takes the controls.
+    #[test]
+    fn crew_takes_the_controls() {
+        let mut crew = joined();
+        let out = crew.handle(Event::TakeControlsRequested);
+        assert_eq!(
+            out.effects,
+            vec![Effect::SendTakeControls { seen_epoch: 0 }]
+        );
+        assert_eq!(
+            crew.role(),
+            Some(Role::Follower),
+            "nothing changes until the host agrees"
+        );
+
+        let mut host = hosting_with_crew();
+        let out = host.handle(Event::TakeControlsReceived { seen_epoch: 0 });
+        assert_eq!(
+            out.effects,
+            vec![
+                Effect::StopStreaming,
+                Effect::StartFollowing {
+                    epoch: 1,
+                    after_handover: true
+                },
+                Effect::SendControls {
+                    controls: controls(1, Seat::Crew)
+                },
+            ]
+        );
+        assert_eq!(notice_text(&out), "Alex took the controls.");
+        assert_eq!(host.role(), Some(Role::Follower));
+        assert_eq!(
+            host.controls_line().as_deref(),
+            Some("Alex has the controls")
+        );
+
+        let out = crew.handle(Event::ControlsReceived(controls(1, Seat::Crew)));
+        assert_eq!(
+            out.effects,
+            vec![Effect::StopFollowing, Effect::StartStreaming { epoch: 1 }]
+        );
+        assert_eq!(notice_text(&out), "You took the controls.");
+        assert_eq!(crew.role(), Some(Role::Authority));
+        assert_eq!(
+            crew.controls_line().as_deref(),
+            Some("You have the controls")
+        );
+    }
+
+    #[test]
+    fn host_takes_the_controls_back() {
+        let mut host = hosting_with_crew();
+        host.handle(Event::TakeControlsReceived { seen_epoch: 0 });
+        let out = host.handle(Event::TakeControlsRequested);
+        assert_eq!(
+            out.effects,
+            vec![
+                Effect::StopFollowing,
+                Effect::StartStreaming { epoch: 2 },
+                Effect::SendControls {
+                    controls: controls(2, Seat::Host)
+                },
+            ]
+        );
+        assert_eq!(notice_text(&out), "You took the controls.");
+
+        let mut crew = joined();
+        crew.handle(Event::ControlsReceived(controls(1, Seat::Crew)));
+        let out = crew.handle(Event::ControlsReceived(controls(2, Seat::Host)));
+        assert_eq!(
+            out.effects,
+            vec![
+                Effect::StopStreaming,
+                Effect::StartFollowing {
+                    epoch: 2,
+                    after_handover: true
+                }
+            ]
+        );
+        assert_eq!(notice_text(&out), "Sam took the controls.");
+        assert_eq!(crew.role(), Some(Role::Follower));
+    }
+
+    // Scenario: Both press at once. The crew asks for the controls (epoch
+    // 0) while the host, which already flies, presses too; then, with the
+    // crew flying, both press at once again.
+    #[test]
+    fn both_pressing_at_once_ends_with_one_pilot_flying() {
+        let mut host = hosting_with_crew();
+        let mut crew = joined();
+
+        // Round 1: the host already flies, so its press does nothing and
+        // the crew's request (made at epoch 0) wins.
+        let request = crew.handle(Event::TakeControlsRequested);
+        assert_eq!(
+            request.effects,
+            vec![Effect::SendTakeControls { seen_epoch: 0 }]
+        );
+        assert_eq!(
+            host.handle(Event::TakeControlsRequested),
+            Outcome::default()
+        );
+        let grant = host.handle(Event::TakeControlsReceived { seen_epoch: 0 });
+        let Some(Effect::SendControls { controls: sent }) = grant.effects.last().cloned() else {
+            panic!("no SendControls in {grant:?}");
+        };
+        crew.handle(Event::ControlsReceived(sent));
+        assert_eq!(crew.role(), Some(Role::Authority));
+        assert_eq!(host.controls(), crew.controls());
+
+        // Round 2: the crew flies; the host presses, and so does the crew
+        // (no-op, it flies). The host's handover reaches the crew.
+        let host_out = host.handle(Event::TakeControlsRequested);
+        assert!(crew.handle(Event::TakeControlsRequested).effects.is_empty());
+        let Some(Effect::SendControls { controls: sent }) = host_out.effects.last().cloned() else {
+            panic!("no SendControls in {host_out:?}");
+        };
+        crew.handle(Event::ControlsReceived(sent));
+        assert_eq!(host.role(), Some(Role::Authority));
+        assert_eq!(crew.role(), Some(Role::Follower));
+        assert_eq!(host.controls(), crew.controls());
+
+        // Round 3: the crew asks at epoch 2 while the host already moved on.
+        host.handle(Event::TakeControlsReceived { seen_epoch: 2 });
+        host.handle(Event::TakeControlsRequested);
+        let late = host.handle(Event::TakeControlsReceived { seen_epoch: 2 });
+        assert_eq!(
+            late,
+            Outcome::default(),
+            "a request from an old epoch is dropped"
+        );
+        assert_eq!(host.role(), Some(Role::Authority));
+    }
+
+    #[test]
+    fn stale_requests_are_dropped() {
+        let mut host = hosting_with_crew();
+        host.handle(Event::TakeControlsReceived { seen_epoch: 0 });
+        host.handle(Event::TakeControlsRequested);
+        // Requests the crew made at epoch 0 or 1 arrive late.
+        for seen_epoch in [0, 1] {
+            let out = host.handle(Event::TakeControlsReceived { seen_epoch });
+            assert_eq!(out, Outcome::default());
+        }
+        assert_eq!(host.controls(), Some(controls(2, Seat::Host)));
+        // An old Controls message changes nothing on the crew either.
+        let mut crew = joined();
+        crew.handle(Event::ControlsReceived(controls(2, Seat::Host)));
+        let out = crew.handle(Event::ControlsReceived(controls(1, Seat::Crew)));
+        assert_eq!(out, Outcome::default());
+        assert_eq!(crew.role(), Some(Role::Follower));
+    }
+
+    // Scenario: Pilot flying presses Take controls.
+    #[test]
+    fn taking_the_controls_while_flying_does_nothing() {
+        let mut host = hosting_with_crew();
+        assert_eq!(
+            host.handle(Event::TakeControlsRequested),
+            Outcome::default()
+        );
+        let mut crew = joined();
+        crew.handle(Event::ControlsReceived(controls(1, Seat::Crew)));
+        assert_eq!(
+            crew.handle(Event::TakeControlsRequested),
+            Outcome::default()
+        );
+    }
+
+    #[test]
+    fn taking_the_controls_needs_a_connected_session() {
+        for mut s in [session(), hosting_waiting()] {
+            assert!(!s.can_take_controls());
+            assert_eq!(s.handle(Event::TakeControlsRequested), Outcome::default());
+            assert_eq!(
+                s.handle(Event::TakeControlsReceived { seen_epoch: 0 }),
+                Outcome::default()
+            );
+        }
+    }
+
+    // Scenario: Crew member leaves while flying.
+    #[test]
+    fn crew_leaving_while_flying_hands_the_host_its_aircraft_back() {
+        let mut host = hosting_with_crew();
+        host.handle(Event::TakeControlsReceived { seen_epoch: 0 });
+        let out = host.handle(Event::CrewGone(PeerGone::Said(ByeReason::Left)));
+        assert_eq!(out.effects, vec![Effect::StopFollowing]);
+        assert!(matches!(host.state(), State::Hosting { crew: None, .. }));
+        assert_eq!(host.controls(), None);
+        // The next crew starts with the host flying again.
+        let out = host.handle(Event::CrewJoined { name: "Kim".into() });
+        assert_eq!(out.effects, vec![Effect::StartStreaming { epoch: 0 }]);
+    }
+
+    #[test]
+    fn crew_flying_keeps_flying_when_the_host_goes() {
+        for gone in [PeerGone::Lost, PeerGone::Said(ByeReason::StoppedHosting)] {
+            let mut crew = joined();
+            crew.handle(Event::ControlsReceived(controls(1, Seat::Crew)));
+            let out = crew.handle(Event::HostGone(gone));
+            assert_eq!(out.effects, vec![Effect::StopStreaming]);
+            assert_eq!(crew.state(), &State::Idle);
+            assert_eq!(crew.controls(), None);
+        }
+    }
+
+    #[test]
+    fn leaving_or_changing_aircraft_stops_by_role() {
+        let mut crew = joined();
+        crew.handle(Event::ControlsReceived(controls(1, Seat::Crew)));
+        let out = crew.handle(Event::LeaveRequested);
+        assert_eq!(out.effects[0], Effect::StopStreaming);
+        let mut host = hosting_with_crew();
+        host.handle(Event::TakeControlsReceived { seen_epoch: 0 });
+        let out = host.handle(Event::AircraftChanged);
+        assert_eq!(out.effects[0], Effect::StopFollowing);
+        let mut host = hosting_with_crew();
+        host.handle(Event::TakeControlsReceived { seen_epoch: 0 });
+        let out = host.handle(Event::HostFailed(HostFailure::Other("x".into())));
+        assert_eq!(out.effects[0], Effect::StopFollowing);
     }
 
     // Scenario: Host unreachable.
@@ -913,6 +1367,7 @@ mod tests {
                 host_aircraft: c172(),
             },
             Refusal::SessionFull,
+            Refusal::DefinitionMismatch,
         ] {
             collect(hosting_waiting().handle(Event::CrewRefused(refusal)));
         }
@@ -944,6 +1399,7 @@ mod tests {
             JoinFailure::Rejected(RejectReason::UnsupportedAircraft),
             JoinFailure::Rejected(RejectReason::SessionFull),
             JoinFailure::Rejected(RejectReason::NotHosting),
+            JoinFailure::Rejected(RejectReason::DefinitionMismatch),
             JoinFailure::HostProofFailed,
             JoinFailure::Other("the host did not finish the handshake".into()),
         ];
@@ -962,7 +1418,23 @@ mod tests {
         }
         collect(joined().handle(Event::AircraftChanged));
 
-        assert_eq!(texts.len(), 26);
+        // Taking the controls.
+        let mut host = hosting_with_crew();
+        collect(host.handle(Event::TakeControlsReceived { seen_epoch: 0 }));
+        collect(host.handle(Event::TakeControlsRequested));
+        let mut crew = joined();
+        collect(crew.handle(Event::ControlsReceived(Controls {
+            epoch: 1,
+            pilot_flying: Seat::Crew,
+        })));
+        collect(crew.handle(Event::ControlsReceived(Controls {
+            epoch: 2,
+            pilot_flying: Seat::Host,
+        })));
+        texts.extend(hosting_with_crew().controls_line());
+        texts.extend(joined().controls_line());
+
+        assert_eq!(texts.len(), 34);
         for text in texts {
             assert!(doc.contains(&text), "docs/hosting.md is missing: {text}");
         }

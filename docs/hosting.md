@@ -74,9 +74,26 @@ Options:
 
    Without a port, `49700` is used.
 
-When the join succeeds, the window shows `Connected`, and the host's aircraft
-takes over yours: you ride along while the host flies. Press
-**Leave session** to fly on your own again.
+When the join succeeds, the window shows `Connected`, your cockpit is set to
+the host's (switches, radios, fuel), and the host's aircraft takes over
+yours: you ride along while the host flies. Press **Leave session** to fly
+on your own again.
+
+## Sharing the cockpit and taking the controls
+
+Both pilots can use every switch, knob, lever and button; the other cockpit
+shows the change at once. The window shows who has the controls:
+`You have the controls`, or for example `Sam has the controls`.
+
+To fly, press **Take controls** in the window, or bind the X-Plane command
+`FlyXTogether/take_controls` to a key or joystick button (Settings >
+Keyboard or Joystick). Your yoke, rudder and throttle then fly the aircraft
+on both computers, and the other pilot's controls follow yours. The other
+pilot can take the controls back the same way. Taking the controls needs no
+confirmation, so agree on it first ("my controls").
+
+Use real weather on both computers: weather is not synced, and after a
+handover the aircraft flies in the new pilot flying's weather.
 
 ## Messages
 
@@ -102,6 +119,7 @@ address, names and versions are examples.
 | A crew member tried to join with FlyXTogether 0.1.0 (protocol 1), but you have 0.2.0 (protocol 2). The versions are incompatible. | Both of you need compatible FlyXTogether versions; update to the same release. |
 | A crew member tried to join with the Cessna 172 SP Seaplane, but you are flying the Cessna 172 SP. | Your crew must load the same aircraft variant as you. |
 | Someone tried to join, but the session is full. | A session has two seats. Your current crew is not affected. |
+| The aircraft files or profiles differ between the two seats. Both pilots need the same aircraft version and the same FlyXTogether release. | Your crew has a different version of the aircraft, a different profile file, or a different FlyXTogether build. |
 | Alex left the session. | Your crew left. You keep hosting and can accept a new join. |
 | Lost connection to Alex. | Nothing was heard from your crew for 10 seconds. You keep hosting. |
 | Alex changed aircraft and left the session. | Your crew loaded a different aircraft. |
@@ -119,9 +137,20 @@ address, names and versions are examples.
 | The host is flying the Cessna 172 SP. Load the same aircraft and join again. | Your aircraft variant differs from the host's. |
 | The host does not accept your aircraft. | The host runs a different FlyXTogether release. Both of you should use the same release. |
 | Session full | The host already has crew. |
+| The aircraft files or profiles differ between the two seats. Both pilots need the same aircraft version and the same FlyXTogether release. | Your aircraft version, profile file or FlyXTogether build differs from the host's. Update so both match. |
 | The host is not accepting crew right now. | The host is stopping. Try again later. |
 | The host could not prove it knows the session password. You may not be talking to the real host. | The computer at that address is not the host you expected, or someone is intercepting the connection. Check the address. |
 | Joining 203.0.113.7:49700 failed: the host did not finish the handshake | Another problem, described after the colon. |
+
+### Taking the controls
+
+| Message | What it means |
+|---|---|
+| You have the controls | Your yoke flies the aircraft. Shown in the window while connected. |
+| Sam has the controls | The other pilot flies; you can press **Take controls**. |
+| You took the controls. | The controls moved to you. |
+| Alex took the controls. | The other pilot took the controls. |
+| Sam took the controls. | The host took the controls back. |
 
 ### When a session ends
 

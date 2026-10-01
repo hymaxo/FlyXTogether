@@ -71,6 +71,8 @@ pub struct Playout {
     predicting_from: Option<FlightState>,
     blend: Option<Blend>,
     last_now: Option<f64>,
+    /// Only samples of this control epoch are accepted, when set.
+    epoch: Option<u32>,
 }
 
 impl Default for Playout {
@@ -91,6 +93,16 @@ impl Playout {
             predicting_from: None,
             blend: None,
             last_now: None,
+            epoch: None,
+        }
+    }
+
+    /// A playout buffer that ignores samples from any other control epoch,
+    /// such as late samples from the previous pilot flying.
+    pub fn for_epoch(epoch: u32) -> Self {
+        Self {
+            epoch: Some(epoch),
+            ..Self::new()
         }
     }
 
@@ -106,6 +118,9 @@ impl Playout {
     /// Adds a sample that arrived at local time `received_at` (seconds).
     /// Samples older than the newest one are stale and dropped.
     pub fn push(&mut self, state: FlightState, received_at: f64) {
+        if self.epoch.is_some_and(|e| e != state.epoch) {
+            return;
+        }
         if let Some(newest) = self.samples.back()
             && (state.seq <= newest.seq || state.sim_time <= newest.sim_time)
         {
@@ -611,6 +626,24 @@ mod tests {
         &frames[start..]
     }
 
+    // Scenario: Samples from the previous pilot flying.
+    #[test]
+    fn samples_from_another_epoch_are_ignored() {
+        let mut p = Playout::for_epoch(2);
+        let sample = |epoch, seq: u32| FlightState {
+            epoch,
+            seq,
+            sim_time: seq as f64 / 30.0,
+            ..FlightState::default()
+        };
+        p.push(sample(1, 50), 0.0);
+        assert_eq!(p.mode(), Mode::Empty);
+        p.push(sample(2, 0), 0.0);
+        p.push(sample(1, 51), 0.01);
+        p.push(sample(2, 1), 0.04);
+        assert_eq!(p.samples.len(), 2);
+        assert!(p.samples.iter().all(|s| s.epoch == 2));
+    }
     #[test]
     fn steady_turn_is_accurate_smooth_and_close_behind() {
         let traj = trajectory(Kind::Circuit);
