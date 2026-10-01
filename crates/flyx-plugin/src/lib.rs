@@ -4,6 +4,8 @@
 #[cfg(feature = "dev")]
 mod dev;
 #[cfg(feature = "dev")]
+mod dev_cockpit;
+#[cfg(feature = "dev")]
 mod dev_spike;
 mod logging;
 mod paths;

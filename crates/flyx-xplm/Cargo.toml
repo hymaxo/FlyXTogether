@@ -7,4 +7,5 @@ license.workspace = true
 
 [dependencies]
 imgui = "0.12"
+thiserror = "2"
 tracing = "0.1"

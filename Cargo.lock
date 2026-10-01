@@ -452,6 +452,7 @@ name = "flyx-xplm"
 version = "0.1.0-alpha.1"
 dependencies = [
  "imgui",
+ "thiserror",
  "tracing",
 ]
 

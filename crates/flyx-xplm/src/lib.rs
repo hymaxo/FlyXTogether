@@ -4,7 +4,9 @@
 //! X-Plane's main thread; the handle types here are deliberately `!Send` so
 //! they cannot leave it.
 
+pub mod command;
 pub mod dataref;
+pub mod dynref;
 pub mod flight_loop;
 pub mod gl;
 pub mod guard;

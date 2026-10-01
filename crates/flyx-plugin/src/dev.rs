@@ -12,6 +12,10 @@ pub enum DevItem {
     ReloadTenTimes,
     CycleWindowState,
     OverrideSpike,
+    CockpitWatch,
+    CockpitWriteTest,
+    CockpitReplayTest,
+    CockpitFollowerTest,
 }
 
 /// Dev menu entries, appended after the normal ones.
@@ -21,6 +25,19 @@ pub const MENU: &[(&str, DevItem)] = &[
     ("Reload plugins 10x (dev)", DevItem::ReloadTenTimes),
     ("Cycle window state (dev)", DevItem::CycleWindowState),
     ("Run override spike, ~18 s (dev)", DevItem::OverrideSpike),
+    ("Cockpit spike: watch on/off (dev)", DevItem::CockpitWatch),
+    (
+        "Cockpit spike: write test, ~10 s (dev)",
+        DevItem::CockpitWriteTest,
+    ),
+    (
+        "Cockpit spike: replay test (dev)",
+        DevItem::CockpitReplayTest,
+    ),
+    (
+        "Cockpit spike: follower test, ~26 s (dev)",
+        DevItem::CockpitFollowerTest,
+    ),
 ];
 
 /// Remaining automatic reloads. An environment variable is the one piece of
@@ -35,6 +52,9 @@ pub struct DevState {
     reload_in_frames: Option<u32>,
     window_state: usize,
     spike: Option<crate::dev_spike::Spike>,
+    watch: Option<crate::dev_cockpit::Watch>,
+    write_test: Option<crate::dev_cockpit::WriteTest>,
+    follower_test: Option<crate::dev_cockpit::FollowerTest>,
 }
 
 impl Drop for DevState {
@@ -42,6 +62,12 @@ impl Drop for DevState {
         // Never leave the flight model overridden when the plugin stops.
         if let Some(spike) = self.spike.as_mut() {
             spike.stop();
+        }
+        if let Some(test) = self.write_test.as_mut() {
+            test.stop();
+        }
+        if let Some(test) = self.follower_test.as_mut() {
+            test.stop();
         }
     }
 }
@@ -64,6 +90,9 @@ impl DevState {
             reload_in_frames,
             window_state: 0,
             spike: None,
+            watch: None,
+            write_test: None,
+            follower_test: None,
         }
     }
 }
@@ -96,6 +125,19 @@ pub fn on_frame(dev: &mut DevState, dt: f32) {
     {
         dev.spike = None;
     }
+    if let Some(watch) = dev.watch.as_mut() {
+        watch.frame();
+    }
+    if let Some(test) = dev.write_test.as_mut()
+        && !test.frame()
+    {
+        dev.write_test = None;
+    }
+    if let Some(test) = dev.follower_test.as_mut()
+        && !test.frame()
+    {
+        dev.follower_test = None;
+    }
     match dev.reload_in_frames {
         Some(0) => {
             dev.reload_in_frames = None;
@@ -121,6 +163,21 @@ pub fn on_menu(e: &mut Enabled, item: DevItem) {
         DevItem::OverrideSpike => {
             if e.dev.spike.is_none() {
                 e.dev.spike = crate::dev_spike::Spike::start();
+            }
+        }
+        DevItem::CockpitWatch => match e.dev.watch.take() {
+            Some(watch) => watch.stop(),
+            None => e.dev.watch = Some(crate::dev_cockpit::Watch::start()),
+        },
+        DevItem::CockpitWriteTest => {
+            if e.dev.write_test.is_none() {
+                e.dev.write_test = Some(crate::dev_cockpit::WriteTest::start());
+            }
+        }
+        DevItem::CockpitReplayTest => crate::dev_cockpit::replay_test(),
+        DevItem::CockpitFollowerTest => {
+            if e.dev.follower_test.is_none() {
+                e.dev.follower_test = crate::dev_cockpit::FollowerTest::start();
             }
         }
         DevItem::CycleWindowState => {

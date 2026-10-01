@@ -138,10 +138,14 @@ pub struct DataRef<T: Scalar> {
 
 impl<T: Scalar> DataRef<T> {
     pub fn find(name: &str) -> Option<Self> {
-        find_raw(name).map(|raw| Self {
+        find_raw(name).map(Self::from_raw)
+    }
+
+    pub(crate) fn from_raw(raw: sys::XPLMDataRef) -> Self {
+        Self {
             raw,
             _type: PhantomData,
-        })
+        }
     }
 
     pub fn get(&self) -> T {
@@ -166,10 +170,14 @@ pub struct ArrayRef<T: Element> {
 
 impl<T: Element> ArrayRef<T> {
     pub fn find(name: &str) -> Option<Self> {
-        find_raw(name).map(|raw| Self {
+        find_raw(name).map(Self::from_raw)
+    }
+
+    pub(crate) fn from_raw(raw: sys::XPLMDataRef) -> Self {
+        Self {
             raw,
             _type: PhantomData,
-        })
+        }
     }
 
     /// Reads up to `out.len()` elements starting at `offset`; returns how many
