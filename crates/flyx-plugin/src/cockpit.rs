@@ -393,7 +393,11 @@ impl CockpitSync {
             .keys(Class::Shared)
             .filter_map(|k| self.datarefs.get(&k).map(|r| (k, r)))
         {
-            actions.extend(active.register.observe(key, from_x(r.get()), frame, now));
+            let value = from_x(r.get());
+            if self.definition.entries[key as usize].is_transient(value) {
+                continue;
+            }
+            actions.extend(active.register.observe(key, value, frame, now));
         }
         actions.extend(active.register.flush(now));
         if actions.iter().any(|a| matches!(a, Action::Send(_))) {

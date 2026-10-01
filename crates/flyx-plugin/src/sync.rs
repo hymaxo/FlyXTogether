@@ -29,6 +29,9 @@ const CLAMP_TOP_M: f64 = 50.0;
 /// stopped, or the other way round, before it is set to match: enough for
 /// a forwarded start or shutdown to take effect by itself.
 const ENGINE_MISMATCH_S: f64 = 3.0;
+/// Times an engine is set to match before giving up until the pilot
+/// flying's engine starts or stops again.
+const ENGINE_MATCH_ATTEMPTS: u8 = 2;
 
 const CONTROL_SURFACES: &str = "sim/operation/override/override_control_surfaces";
 
@@ -350,6 +353,9 @@ pub struct Follower {
     /// Per engine: since when (seconds) it disagrees with the pilot
     /// flying's about running.
     engine_mismatch: [Option<f64>; MAX_ENGINES],
+    /// Per engine: the pilot flying's state the attempts are for, and how
+    /// many were made.
+    engine_attempts: [(bool, u8); MAX_ENGINES],
     /// This simulator was paused because the pilot flying paused.
     paused_with_pilot_flying: bool,
     crash_logged: bool,
@@ -390,6 +396,7 @@ impl Follower {
             resting_height,
             lead_logged: !after_handover,
             engine_mismatch: [None; MAX_ENGINES],
+            engine_attempts: [(false, 0); MAX_ENGINES],
             paused_with_pilot_flying: false,
             crash_logged: false,
         }
@@ -445,28 +452,43 @@ impl Follower {
 
     /// Engines normally start and stop by themselves, because their
     /// controls and the forwarded starter are the pilot flying's. One that
-    /// still disagrees after [`ENGINE_MISMATCH_S`] is set to match.
+    /// still disagrees after [`ENGINE_MISMATCH_S`] is set to match, at most
+    /// [`ENGINE_MATCH_ATTEMPTS`] times: an engine whose own controls cannot
+    /// keep it running is not restarted over and over.
     fn match_engines(&mut self, refs: &Refs, pose: &FlightState, now: f64) {
         let local = refs.engines_running();
         let mut set = None;
         for i in 0..refs.engines() {
             let wanted = pose.visuals.engine_running[i];
-            if local[i] == wanted {
+            if self.engine_attempts[i].0 != wanted {
+                self.engine_attempts[i] = (wanted, 0);
+            }
+            if local[i] == wanted || self.engine_attempts[i].1 > ENGINE_MATCH_ATTEMPTS {
                 self.engine_mismatch[i] = None;
                 continue;
             }
             let since = *self.engine_mismatch[i].get_or_insert(now);
-            if now - since >= ENGINE_MISMATCH_S {
-                let mut running = local;
-                running[i] = wanted;
-                set = Some(running);
-                self.engine_mismatch[i] = None;
-                info!(
+            if now - since < ENGINE_MISMATCH_S {
+                continue;
+            }
+            self.engine_mismatch[i] = None;
+            self.engine_attempts[i].1 += 1;
+            if self.engine_attempts[i].1 > ENGINE_MATCH_ATTEMPTS {
+                warn!(
                     engine = i,
                     running = wanted,
-                    "engine set to match the pilot flying's"
+                    "engine does not stay like the pilot flying's; mixture, magnetos or fuel differ"
                 );
+                continue;
             }
+            let mut running = local;
+            running[i] = wanted;
+            set = Some(running);
+            info!(
+                engine = i,
+                running = wanted,
+                "engine set to match the pilot flying's"
+            );
         }
         if let Some(running) = set {
             let engines = refs.engines();

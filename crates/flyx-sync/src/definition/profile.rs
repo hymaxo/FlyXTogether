@@ -52,6 +52,10 @@ pub struct DatarefEntry {
     /// Smallest change of a float value that counts as a change.
     #[serde(default)]
     pub epsilon: Option<f32>,
+    /// Momentary positions of a spring-loaded switch, never synced as a
+    /// value (the commands that hold them are forwarded instead).
+    #[serde(default)]
+    pub transient: Vec<i32>,
     #[serde(default)]
     pub variants: Vec<String>,
 }

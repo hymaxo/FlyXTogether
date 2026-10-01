@@ -120,6 +120,7 @@ dataref = "example/sound/*"
 - `dataref`, `command`: the name. Braces expand: `a_{1,2}` means `a_1` and `a_2`, and `x{1..3}` means `x1`, `x2` and `x3`. Only `local` names may contain `*`.
 - `index`: for array datarefs. A number, a list (`[0, 1]`) or `"per_engine"` (one element per engine of the aircraft).
 - `epsilon`: the smallest change of a fractional value that counts as a change (default 0.0001).
+- `transient`: for a spring-loaded switch, the momentary positions that are never synced as a value, such as `[4]` for an ignition key on START. Its commands are forwarded, so holding START still works from either seat.
 - `variants`: limits the entry to some of the profile's variants.
 
 **Format version.** `format = 1` is the only format so far. A file with a

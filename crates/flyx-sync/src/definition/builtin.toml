@@ -9,7 +9,6 @@ name = "built-in"
 # Standard cockpit values. Either pilot can change them; the host orders
 # concurrent changes. Not listed on purpose (see the cockpit spike notes in
 # the design): sim/cockpit/autopilot/autopilot_state (writing toggles bits),
-# the ignition key (springs back from START; its commands are forwarded),
 # flap_handle_request_ratio (follows the flap handle).
 
 # Electrical
@@ -64,6 +63,12 @@ epsilon = 0.01
 dataref = "sim/cockpit2/engine/actuators/cowl_flap_ratio"
 index = "per_engine"
 epsilon = 0.01
+# Magnetos: OFF, L, R, BOTH. START (4) springs back; the starter commands
+# that hold it are forwarded instead.
+[[shared]]
+dataref = "sim/cockpit2/engine/actuators/ignition_key"
+index = "per_engine"
+transient = [4]
 [[shared]]
 dataref = "sim/cockpit2/engine/actuators/fuel_pump_on"
 index = "per_engine"

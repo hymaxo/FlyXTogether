@@ -6,6 +6,7 @@ pub mod profile;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use flyx_protocol::Value;
 use sha2::{Digest, Sha256};
 
 pub use manip::{DatarefName, Manipulators};
@@ -70,9 +71,23 @@ pub struct Entry {
     pub target: Target,
     /// Smallest change of a float value that counts as a change.
     pub epsilon: f32,
+    /// Momentary positions that are never synced as a value.
+    pub transient: Vec<i32>,
 }
 
 impl Entry {
+    /// Whether `value` is a momentary position of a spring-loaded switch,
+    /// such as an ignition key on START. The seat keeps its last synced
+    /// position for it; the forwarded command does the rest.
+    pub fn is_transient(&self, value: Value) -> bool {
+        let whole = match value {
+            Value::Int(v) => v as f64,
+            Value::Float(v) => v as f64,
+            Value::Double(v) => v,
+        };
+        self.transient.iter().any(|&t| t as f64 == whole)
+    }
+
     /// Whether the value is a magnetic heading in degrees, which wraps
     /// around at 360.
     pub fn is_heading(&self) -> bool {
@@ -114,17 +129,21 @@ impl Definition {
     /// Builds the definition: generated entries, then the built-in list,
     /// then the first matching profile; local patterns are applied last.
     pub fn build(aircraft: &Aircraft, builtin: &Profile, profiles: &[Profile]) -> Definition {
-        let mut entries: BTreeMap<(Class, Target), f32> = BTreeMap::new();
+        // Epsilon and transient positions per entry.
+        let mut entries: BTreeMap<(Class, Target), (f32, Vec<i32>)> = BTreeMap::new();
         let mut local_commands: Vec<String> = Vec::new();
         let mut local_datarefs: Vec<String> = Vec::new();
 
         for command in &aircraft.manipulators.commands {
-            entries.insert((Class::Command, Target::Command(command.clone())), 0.0);
+            entries.insert(
+                (Class::Command, Target::Command(command.clone())),
+                (0.0, Vec::new()),
+            );
         }
         for dataref in &aircraft.manipulators.datarefs {
             entries.insert(
                 (Class::Shared, Target::Dataref(dataref.clone())),
-                DEFAULT_EPSILON,
+                (DEFAULT_EPSILON, Vec::new()),
             );
         }
 
@@ -140,7 +159,10 @@ impl Definition {
             let mut add = |class, list: &[DatarefEntry]| {
                 for entry in list.iter().filter(|e| applies(&e.variants, variant)) {
                     for (name, epsilon) in expand_dataref(entry, aircraft.engines) {
-                        entries.insert((class, Target::Dataref(name)), epsilon);
+                        entries.insert(
+                            (class, Target::Dataref(name)),
+                            (epsilon, entry.transient.clone()),
+                        );
                     }
                 }
             };
@@ -154,7 +176,7 @@ impl Definition {
                 .filter(|e| applies(&e.variants, variant))
             {
                 for name in expand(&entry.command).unwrap_or_default() {
-                    entries.insert((Class::Command, Target::Command(name)), 0.0);
+                    entries.insert((Class::Command, Target::Command(name)), (0.0, Vec::new()));
                 }
             }
             for entry in source
@@ -193,10 +215,11 @@ impl Definition {
 
         let entries: Vec<Entry> = entries
             .into_iter()
-            .map(|((class, target), epsilon)| Entry {
+            .map(|((class, target), (epsilon, transient))| Entry {
                 class,
                 target,
                 epsilon,
+                transient,
             })
             .collect();
         Definition {
@@ -253,7 +276,11 @@ fn identity(entries: &[Entry]) -> [u8; 32] {
     hash.update(IDENTITY_VERSION.as_bytes());
     hash.update(b"\n");
     for e in entries {
-        let line = format!("{}\t{}\t{}\n", e.class.tag(), e.target, e.epsilon);
+        let mut line = format!("{}\t{}\t{}", e.class.tag(), e.target, e.epsilon);
+        if !e.transient.is_empty() {
+            line += &format!("\ttransient={:?}", e.transient);
+        }
+        line += "\n";
         hash.update(line.as_bytes());
     }
     hash.finalize().into()
@@ -395,6 +422,18 @@ mod tests {
         );
         // Overrides live under sim/operation/ but are not removed as local.
         assert_eq!(d.count(Class::MonitorOverride), 4);
+    }
+
+    #[test]
+    fn ignition_key_start_is_transient() {
+        let d = build(&c172(), &[]);
+        let (_, key) = d
+            .of_class(Class::Shared)
+            .find(|(_, e)| e.target.to_string() == "sim/cockpit2/engine/actuators/ignition_key[0]")
+            .expect("ignition key shared");
+        assert!(key.is_transient(Value::Int(4)));
+        assert!(!key.is_transient(Value::Int(3)));
+        assert!(!key.is_transient(Value::Float(3.5)));
     }
 
     #[test]
