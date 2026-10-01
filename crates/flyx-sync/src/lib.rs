@@ -1,6 +1,7 @@
 //! Simulator-independent session and flight-state logic.
 
 pub mod aircraft;
+pub mod cockpit;
 pub mod definition;
 pub mod password;
 pub mod playout;
