@@ -159,6 +159,12 @@ impl Playout {
         }
     }
 
+    /// After a handover: the measured lead (seconds) and the time it
+    /// decays over, once the stream reached the render time.
+    pub fn handover_lead(&self) -> Option<(f64, f64)> {
+        self.lead.map(|l| (l.initial, l.decay))
+    }
+
     pub fn mode(&self) -> Mode {
         self.mode
     }

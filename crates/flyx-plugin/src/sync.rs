@@ -308,6 +308,8 @@ pub struct Follower {
     /// taking over. Both seats fly the same aircraft, so it is the right
     /// height on the ground regardless of terrain or reporting differences.
     resting_height: Option<f64>,
+    /// Whether the handover lead was logged.
+    lead_logged: bool,
 }
 
 impl Follower {
@@ -335,6 +337,7 @@ impl Follower {
             probe: TerrainProbe::new(),
             last_pose: None,
             resting_height,
+            lead_logged: !after_handover,
         }
     }
 
@@ -356,6 +359,17 @@ impl Follower {
         if let Some(pose) = self.playout.sample(now) {
             refs.apply(&pose, &self.probe, self.resting_height);
             self.last_pose = Some(pose);
+        }
+        if !self.lead_logged && self.playout.mode() == flyx_sync::playout::Mode::Interpolating {
+            self.lead_logged = true;
+            match self.playout.handover_lead() {
+                Some((lead, decay)) => info!(
+                    lead_ms = (lead * 1000.0).round(),
+                    decay_s = decay,
+                    "handover: following with a lead"
+                ),
+                None => info!("handover: following without a lead (slow or stopped)"),
+            }
         }
         self.last_pose.as_ref()
     }
