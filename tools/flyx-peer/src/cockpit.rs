@@ -430,6 +430,8 @@ impl Cockpit {
                     "ENGN_oil_press_psi" if running => 60.0,
                     "ENGN_FF_" if running => 0.011,
                     "m_fuel" if d.index.is_some_and(|i| i < 2) => 60.0,
+                    // Engine-driven vacuum pumps make about 5 inHg.
+                    "vacuum" | "vacuum2" if running => 5.0,
                     _ => return None,
                 };
                 Some((key as u16, Value::Float(value)))
