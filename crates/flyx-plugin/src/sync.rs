@@ -1,11 +1,19 @@
 //! Flight-state sync inside X-Plane: the authority samples
 //! and streams its aircraft; the follower shows the playout buffer's pose.
+//!
+//! The follower's flight model keeps running: every frame, after it ran,
+//! the aircraft is put at the played-out position, attitude, velocity and
+//! rotation rates. Its engine, gyros, air-data instruments, electrics and
+//! avionics then simulate themselves from the same state and the same
+//! cockpit as the pilot flying's, and nothing has to be copied gauge by
+//! gauge.
 
 use std::time::Instant;
 
 use flyx_net::{NetCommand, NetHandle, ReceivedState};
 use flyx_protocol::{FlightState, MAX_ENGINES, MAX_GEAR, MAX_INPUTS, Visuals, WING_PARTS};
 use flyx_sync::playout::Playout;
+use flyx_xplm::command::Command;
 use flyx_xplm::dataref::{ArrayRef, DataRef};
 use flyx_xplm::scenery::{TerrainProbe, world_to_local};
 use tracing::{info, warn};
@@ -17,7 +25,11 @@ const CLAMP_BOTTOM_M: f64 = 15.0;
 /// Above this height the authority's MSL elevation is used unchanged.
 const CLAMP_TOP_M: f64 = 50.0;
 
-const PLANEPATH: &str = "sim/operation/override/override_planepath";
+/// Seconds the follower's engine may run while the pilot flying's is
+/// stopped, or the other way round, before it is set to match: enough for
+/// a forwarded start or shutdown to take effect by itself.
+const ENGINE_MISMATCH_S: f64 = 3.0;
+
 const CONTROL_SURFACES: &str = "sim/operation/override/override_control_surfaces";
 
 /// Every dataref the sync reads or writes, looked up once.
@@ -36,6 +48,8 @@ pub struct Refs {
     velocity: [DataRef<f32>; 3],
     acceleration: [DataRef<f32>; 3],
     rates: [DataRef<f32>; 3],
+    /// The same rotation rates in rad/s, which the flight model integrates.
+    rates_rad: [DataRef<f32>; 3],
     y_agl: DataRef<f32>,
     on_ground: DataRef<i32>,
     paused: DataRef<i32>,
@@ -51,8 +65,8 @@ pub struct Refs {
     gear_deploy: ArrayRef<f32>,
     /// ...and the deployment state the follower writes.
     gear_deploy_set: ArrayRef<f32>,
-    planepath: ArrayRef<i32>,
     control_surfaces: DataRef<i32>,
+    crashed: DataRef<i32>,
 }
 
 fn scalar<T: flyx_xplm::dataref::Scalar>(name: &str) -> Result<DataRef<T>, String> {
@@ -85,6 +99,7 @@ impl Refs {
             velocity: [pos("local_vx")?, pos("local_vy")?, pos("local_vz")?],
             acceleration: [pos("local_ax")?, pos("local_ay")?, pos("local_az")?],
             rates: [pos("P")?, pos("Q")?, pos("R")?],
+            rates_rad: [pos("Prad")?, pos("Qrad")?, pos("Rrad")?],
             y_agl: pos("y_agl")?,
             on_ground: scalar("sim/flightmodel/failures/onground_any")?,
             paused: scalar("sim/time/paused")?,
@@ -98,8 +113,8 @@ impl Refs {
             num_engines: scalar("sim/aircraft/engine/acf_num_engines")?,
             gear_deploy: array("sim/flightmodel2/gear/deploy_ratio")?,
             gear_deploy_set: array("sim/aircraft/parts/acf_gear_deploy")?,
-            planepath: array(PLANEPATH)?,
             control_surfaces: scalar(CONTROL_SURFACES)?,
+            crashed: scalar("sim/flightmodel2/misc/has_crashed")?,
         })
     }
 
@@ -172,11 +187,15 @@ impl Refs {
     }
 
     fn set_overrides(&self, on: bool) {
-        self.planepath.set_one(0, on as i32);
         self.control_surfaces.set(on as i32);
     }
 
-    /// Moves the user's aircraft to `pose`.
+    fn engines_running(&self) -> [bool; MAX_ENGINES] {
+        let mut running = [0i32; MAX_ENGINES];
+        self.engine_running.get(0, &mut running[..self.engines()]);
+        running.map(|r| r != 0)
+    }
+
     /// The user's aircraft height above ground right now, if it is
     /// resting on the ground.
     fn resting_height(&self, probe: &TerrainProbe) -> Option<f64> {
@@ -186,7 +205,10 @@ impl Refs {
         self.height_over_terrain(probe)
     }
 
-    /// Moves the user's aircraft to `pose`. On the ground the aircraft sits
+    /// Puts the user's aircraft at `pose`, after this frame's flight model
+    /// ran. The next frame's flight model continues from there, so the
+    /// position, attitude, velocity and rotation rates are all set; its
+    /// forces and engines are its own. On the ground the aircraft sits
     /// `ground_height` above this simulator's terrain when known (its own
     /// measured resting height), else the height the authority reported.
     fn apply(&self, pose: &FlightState, probe: &TerrainProbe, ground_height: Option<f64>) {
@@ -223,8 +245,8 @@ impl Refs {
 
         for i in 0..3 {
             self.velocity[i].set(pose.velocity[i]);
-            self.acceleration[i].set(pose.acceleration[i]);
             self.rates[i].set(pose.rates_deg[i]);
+            self.rates_rad[i].set(pose.rates_deg[i].to_radians());
         }
         let v = &pose.visuals;
         self.aileron.set(0, &v.aileron_deg);
@@ -232,10 +254,6 @@ impl Refs {
         self.rudder.set(0, &v.rudder_deg);
         self.flap.set(0, &v.flap_deg);
         self.steer.set_one(0, v.nosewheel_steer_deg);
-        let engines = self.engines();
-        let running = v.engine_running.map(|r| r as i32);
-        self.engine_running.set(0, &running[..engines]);
-        self.prop_speed.set(0, &v.prop_speed_rad_s[..engines]);
         self.gear_deploy_set.set(0, &v.gear_deploy);
     }
 }
@@ -316,8 +334,8 @@ impl Authority {
     }
 }
 
-/// The follower: overrides the flight model and shows the authority's
-/// motion.
+/// The follower: shows the authority's motion with its own flight model
+/// running.
 pub struct Follower {
     playout: Playout,
     origin: Instant,
@@ -329,6 +347,12 @@ pub struct Follower {
     resting_height: Option<f64>,
     /// Whether the handover lead was logged.
     lead_logged: bool,
+    /// Per engine: since when (seconds) it disagrees with the pilot
+    /// flying's about running.
+    engine_mismatch: [Option<f64>; MAX_ENGINES],
+    /// This simulator was paused because the pilot flying paused.
+    paused_with_pilot_flying: bool,
+    crash_logged: bool,
 }
 
 impl Follower {
@@ -356,7 +380,7 @@ impl Follower {
         }
         info!(
             control_epoch,
-            after_handover, "following: flight-model path and control surfaces overridden"
+            after_handover, "following: aircraft placed every frame, flight model running"
         );
         Self {
             playout,
@@ -365,6 +389,9 @@ impl Follower {
             last_pose: None,
             resting_height,
             lead_logged: !after_handover,
+            engine_mismatch: [None; MAX_ENGINES],
+            paused_with_pilot_flying: false,
+            crash_logged: false,
         }
     }
 
@@ -376,8 +403,18 @@ impl Follower {
         self.playout.push(received.state, at);
     }
 
-    pub fn set_paused(&mut self, paused: bool) {
+    /// The pilot flying paused or resumed: the playout holds, and this
+    /// simulator pauses with it, so its flight model and engines wait too.
+    pub fn set_paused(&mut self, paused: bool, refs: &Refs) {
         self.playout.set_paused(paused);
+        if paused != refs.is_paused() {
+            run_command(if paused {
+                "sim/operation/pause_on"
+            } else {
+                "sim/operation/pause_off"
+            });
+        }
+        self.paused_with_pilot_flying = paused;
     }
 
     /// Shows the next pose; returns it.
@@ -385,7 +422,12 @@ impl Follower {
         let now = self.origin.elapsed().as_secs_f64();
         if let Some(pose) = self.playout.sample(now) {
             refs.apply(&pose, &self.probe, self.resting_height);
+            self.match_engines(refs, &pose, now);
             self.last_pose = Some(pose);
+        }
+        if !self.crash_logged && refs.crashed.get() != 0 {
+            self.crash_logged = true;
+            warn!("this simulator's aircraft crashed while following");
         }
         if !self.lead_logged && self.playout.mode() == flyx_sync::playout::Mode::Interpolating {
             self.lead_logged = true;
@@ -401,30 +443,66 @@ impl Follower {
         self.last_pose.as_ref()
     }
 
-    /// Gives the aircraft back to X-Plane in one frame: the last pose and
-    /// its velocities are written, then the overrides cleared, so the
-    /// flight model continues from there without a jump.
+    /// Engines normally start and stop by themselves, because their
+    /// controls and the forwarded starter are the pilot flying's. One that
+    /// still disagrees after [`ENGINE_MISMATCH_S`] is set to match.
+    fn match_engines(&mut self, refs: &Refs, pose: &FlightState, now: f64) {
+        let local = refs.engines_running();
+        let mut set = None;
+        for i in 0..refs.engines() {
+            let wanted = pose.visuals.engine_running[i];
+            if local[i] == wanted {
+                self.engine_mismatch[i] = None;
+                continue;
+            }
+            let since = *self.engine_mismatch[i].get_or_insert(now);
+            if now - since >= ENGINE_MISMATCH_S {
+                let mut running = local;
+                running[i] = wanted;
+                set = Some(running);
+                self.engine_mismatch[i] = None;
+                info!(
+                    engine = i,
+                    running = wanted,
+                    "engine set to match the pilot flying's"
+                );
+            }
+        }
+        if let Some(running) = set {
+            let engines = refs.engines();
+            refs.engine_running
+                .set(0, &running.map(|r| r as i32)[..engines]);
+        }
+    }
+
+    /// Gives the aircraft back to X-Plane: the last pose and its velocities
+    /// are written, then the overrides cleared. The flight model was
+    /// running all along, so it continues from there without a jump.
     pub fn release(self, refs: &Refs) {
         if let Some(pose) = &self.last_pose {
             refs.apply(pose, &self.probe, self.resting_height);
         }
         refs.set_overrides(false);
+        if self.paused_with_pilot_flying && refs.is_paused() {
+            run_command("sim/operation/pause_off");
+        }
         info!("stopped following: aircraft handed back to X-Plane");
+    }
+}
+
+fn run_command(name: &str) {
+    match Command::find(name) {
+        Some(command) => command.once(),
+        None => warn!(name, "command not found"),
     }
 }
 
 /// Clears the overrides without any other state; used by the emergency
 /// teardown after an internal error.
 pub fn emergency_release() {
-    match (
-        ArrayRef::<i32>::find(PLANEPATH),
-        DataRef::<i32>::find(CONTROL_SURFACES),
-    ) {
-        (Some(planepath), Some(surfaces)) => {
-            planepath.set_one(0, 0);
-            surfaces.set(0);
-        }
-        _ => warn!("emergency release: override datarefs not found"),
+    match DataRef::<i32>::find(CONTROL_SURFACES) {
+        Some(surfaces) => surfaces.set(0),
+        None => warn!("emergency release: override dataref not found"),
     }
 }
 

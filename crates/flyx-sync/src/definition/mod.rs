@@ -394,7 +394,7 @@ mod tests {
                 .contains(&"sim/cockpit2/engine/actuators/throttle_ratio[0]".to_owned())
         );
         // Overrides live under sim/operation/ but are not removed as local.
-        assert_eq!(d.count(Class::MonitorOverride), 7);
+        assert_eq!(d.count(Class::MonitorOverride), 4);
     }
 
     #[test]

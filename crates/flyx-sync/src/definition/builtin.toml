@@ -174,7 +174,9 @@ dataref = "sim/cockpit2/radios/actuators/transponder_mode"
 
 # ----------------------------------------------------------------- state
 # Owned by the pilot flying and copied to the other seat. The other seat's
-# engine does not run while it follows, so its gauges come from here.
+# flight model keeps running while it follows, so its engines, gyros and
+# instruments simulate themselves; only quantities that would slowly drift
+# apart are copied.
 [[state]]
 dataref = "sim/flightmodel/weight/m_fuel"
 index = [0, 1, 2, 3, 4, 5, 6, 7, 8]
@@ -186,78 +188,20 @@ epsilon = 0.01
 [[state]]
 dataref = "sim/flightmodel/weight/m_fixed"
 epsilon = 0.01
-[[state]]
-dataref = "sim/flightmodel/engine/ENGN_tacrad"
-index = "per_engine"
-epsilon = 0.05
-[[state]]
-dataref = "sim/flightmodel/engine/ENGN_EGT_c"
-index = "per_engine"
-epsilon = 0.1
-[[state]]
-dataref = "sim/flightmodel/engine/ENGN_CHT_c"
-index = "per_engine"
-epsilon = 0.1
-[[state]]
-dataref = "sim/flightmodel/engine/ENGN_oil_temp_c"
-index = "per_engine"
-epsilon = 0.1
-[[state]]
-dataref = "sim/flightmodel/engine/ENGN_oil_press_psi"
-index = "per_engine"
-epsilon = 0.1
-# The vacuum gyros (attitude indicator, directional gyro) need suction,
-# which the following seat's frozen engine does not make.
-[[state]]
-dataref = "sim/cockpit/misc/vacuum"
-epsilon = 0.01
-[[state]]
-dataref = "sim/cockpit/misc/vacuum2"
-epsilon = 0.01
-[[state]]
-dataref = "sim/flightmodel/engine/ENGN_FF_"
-index = "per_engine"
-epsilon = 0.00001
 
 # --------------------------------------------------------- pilot flying
-# Per-frame values of the pilot flying, played out with the motion and
-# written in the other cockpit every frame: flight-control inputs, and the
-# gyro and air-data instrument readings (the following seat computes them in
-# its flight model, which is frozen while it follows). Magnetic headings
-# (`*_deg_mag_*`) are interpolated the short way around the compass. At most
-# 32 after per-engine expansion.
+# The pilot flying's flight-control inputs, played out with the motion and
+# written in the other cockpit every frame. The totals include the
+# autopilot's servos, which only act on the pilot flying's aircraft; many
+# cockpits animate the yoke from them. Magnetic headings (`*_deg_mag_*`)
+# would be interpolated the short way around the compass. At most 32 after
+# per-engine expansion.
 [[input]]
 dataref = "sim/cockpit2/controls/total_pitch_ratio"
 [[input]]
 dataref = "sim/cockpit2/controls/total_roll_ratio"
 [[input]]
 dataref = "sim/cockpit2/controls/total_heading_ratio"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/heading_vacuum_deg_mag_{pilot,copilot}"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/pitch_vacuum_deg_pilot"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/roll_vacuum_deg_pilot"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/heading_electric_deg_mag_pilot"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/pitch_electric_deg_pilot"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/roll_electric_deg_pilot"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/heading_AHARS_deg_mag_pilot"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/pitch_AHARS_deg_pilot"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/roll_AHARS_deg_pilot"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/turn_rate_roll_deg_pilot"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/slip_deg"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/altitude_ft_{pilot,copilot}"
-[[input]]
-dataref = "sim/cockpit2/gauges/indicators/vvi_fpm_{pilot,copilot}"
 [[input]]
 dataref = "sim/cockpit2/controls/yoke_pitch_ratio"
 [[input]]
@@ -272,8 +216,8 @@ dataref = "sim/cockpit2/controls/right_brake_ratio"
 dataref = "sim/cockpit2/engine/actuators/throttle_ratio"
 index = "per_engine"
 
-# Set on the pilot monitoring's seat while it follows, so its own hardware,
-# autopilot and frozen engine do not fight the values it is given.
+# Set on the pilot monitoring's seat while it follows, so its own hardware
+# and autopilot do not fight the inputs it is given.
 [[monitor_override]]
 dataref = "sim/operation/override/override_joystick"
 [[monitor_override]]
@@ -282,12 +226,6 @@ dataref = "sim/operation/override/override_throttles"
 dataref = "sim/operation/override/override_toe_brakes"
 [[monitor_override]]
 dataref = "sim/operation/override/override_autopilot"
-[[monitor_override]]
-dataref = "sim/operation/override/override_itt_egt"
-[[monitor_override]]
-dataref = "sim/operation/override/override_cht_oilt"
-[[monitor_override]]
-dataref = "sim/operation/override/override_fuel_flow"
 
 # ----------------------------------------------------------------- local
 # Things that only concern one seat's view, sound or windows.

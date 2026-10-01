@@ -17,7 +17,7 @@ for one aircraft and mark it as verified.
    every aircraft: light and electrical switches, fuel pumps and selector,
    mixture, flaps, trim, parking brake, radio frequencies, transponder,
    autopilot settings, altimeter setting and more. The flight-control inputs
-   and the systems state (fuel, payload, engine gauges) are added too. The
+   and the systems state (fuel and payload) are added too. The
    list lives in [`crates/flyx-sync/src/definition/builtin.toml`](../crates/flyx-sync/src/definition/builtin.toml).
 3. **A profile**, if one in the plugin's `profiles/` folder matches the
    aircraft. It is applied last.
@@ -28,16 +28,18 @@ for one aircraft and mark it as verified.
 |---|---|
 | `shared` | A cockpit value. When either pilot changes it, the other seat gets the change. When both change it at once, the host decides the order, so both end with the same value. Every few seconds, values that drifted apart are repaired. |
 | `command` | A cockpit command. When either pilot triggers it, by clicking, by keyboard or by joystick, it also runs on the other seat, including how long it is held. Holding the key on START is one example. |
-| `state` | A simulated value owned by the pilot flying, such as fuel or engine temperature. It is copied to the other seat twice a second. |
+| `state` | A simulated value owned by the pilot flying that would slowly drift apart between the seats, such as fuel. It is copied to the other seat twice a second. |
 | `local` | Never synced: views, popups, sound volumes and so on. |
 
-The pilot flying's per-frame values (`input`) are handled by the built-in
-list, together with the overrides the other seat uses while following
-(`monitor_override`). The per-frame values are the yoke, pedals, toe brakes
-and throttles, plus the gyro and air-data instrument readings (attitude,
-heading, turn coordinator, altimeter, vertical speed), because the following
-seat's flight model, which computes them, is frozen while it follows. Profiles rarely need to touch
+The pilot flying's yoke, pedals, toe brakes and throttles (`input`) are
+handled by the built-in list, together with the overrides the other seat
+uses while following (`monitor_override`). Profiles rarely need to touch
 them.
+
+Instruments need no entries at all. The following seat's flight model
+keeps running, with its aircraft put where the pilot flying's is every
+frame, so its engines, gyros, air-data instruments, electrics and avionics
+simulate themselves from the same state and the same cockpit.
 
 A command and its result usually both sync. For example, the
 landing-light switch command runs on both seats, and the

@@ -278,13 +278,7 @@ impl Cockpit {
 
     /// One frame: notice local changes, send due messages, release held
     /// commands, and send systems state while pilot flying.
-    pub fn frame(
-        &mut self,
-        frame: u64,
-        now: f64,
-        streaming: Option<(u32, FlightState)>,
-        net: &NetHandle,
-    ) {
+    pub fn frame(&mut self, frame: u64, now: f64, streaming: Option<u32>, net: &NetHandle) {
         let Some(register) = &mut self.register else {
             return;
         };
@@ -306,7 +300,7 @@ impl Cockpit {
             self.send_command(key, HandlerPhase::End, net);
         }
 
-        if let Some((epoch, flight)) = streaming
+        if let Some(epoch) = streaming
             && now >= self.next_systems
             && let Some(register) = &self.register
         {
@@ -314,7 +308,7 @@ impl Cockpit {
             let repair = self.repair.next_chunk(&register.snapshot());
             net.send(NetCommand::SendSystems {
                 epoch,
-                state: self.state_values(&flight),
+                state: self.state_values(),
                 repair,
             });
         }
@@ -402,18 +396,6 @@ impl Cockpit {
                 (0.05 + state.theta_deg / 20.0).clamp(-1.0, 1.0)
             } else if name.contains("throttle_ratio") {
                 throttle
-            } else if name.contains("indicators/heading_") {
-                state.psi_deg
-            } else if name.contains("indicators/pitch_") {
-                state.theta_deg
-            } else if name.contains("indicators/roll_") {
-                state.phi_deg
-            } else if name.contains("indicators/altitude_ft") {
-                (state.elevation_m * 3.280_84) as f32
-            } else if name.contains("indicators/vvi_fpm") {
-                state.velocity[1] * 196.85
-            } else if name.contains("turn_rate_roll") {
-                state.phi_deg / 2.0
             } else {
                 0.0
             };
@@ -421,29 +403,16 @@ impl Cockpit {
         out
     }
 
-    /// Synthetic systems state matching `state`: engine gauges and fuel.
-    fn state_values(&self, state: &FlightState) -> Vec<(u16, Value)> {
+    /// Synthetic systems state: fuel.
+    fn state_values(&self) -> Vec<(u16, Value)> {
         self.definition
             .of_class(Class::State)
             .filter_map(|(key, entry)| {
                 let Target::Dataref(d) = &entry.target else {
                     return None;
                 };
-                let engine = d
-                    .index
-                    .unwrap_or(0)
-                    .min(state.visuals.prop_speed_rad_s.len() - 1);
-                let running = state.visuals.engine_running[engine];
                 let value = match d.name.rsplit('/').next()? {
-                    "ENGN_tacrad" => state.visuals.prop_speed_rad_s[engine],
-                    "ENGN_EGT_c" if running => 650.0,
-                    "ENGN_CHT_c" if running => 180.0,
-                    "ENGN_oil_temp_c" if running => 85.0,
-                    "ENGN_oil_press_psi" if running => 60.0,
-                    "ENGN_FF_" if running => 0.011,
                     "m_fuel" if d.index.is_some_and(|i| i < 2) => 60.0,
-                    // Engine-driven vacuum pumps make about 5 inHg.
-                    "vacuum" | "vacuum2" if running => 5.0,
                     _ => return None,
                 };
                 Some((key as u16, Value::Float(value)))

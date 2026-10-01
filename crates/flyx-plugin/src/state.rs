@@ -303,8 +303,8 @@ fn on_frame(tick: Tick) -> NextCall {
                 }
                 NetEvent::Paused(paused) => {
                     info!(paused, "pilot flying pause state");
-                    if let Some(f) = e.follower.as_mut() {
-                        f.set_paused(paused);
+                    if let (Some(f), Some(refs)) = (e.follower.as_mut(), &e.refs) {
+                        f.set_paused(paused, refs);
                     }
                 }
                 NetEvent::Cockpit(message) => {

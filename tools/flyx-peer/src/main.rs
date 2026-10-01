@@ -495,7 +495,7 @@ impl Peer {
             .streaming
             .map(|epoch| (epoch, self.flight_state(epoch, now)));
         if let Some(c) = &mut self.cockpit {
-            c.frame(frame, now, flight, &self.net);
+            c.frame(frame, now, self.streaming, &self.net);
         }
         if let Some((_, state)) = flight {
             self.seq = self.seq.wrapping_add(1);
