@@ -395,6 +395,9 @@ impl Peer {
         }
         let mut state = self.trajectory.state_at(now, self.seq);
         state.epoch = epoch;
+        if !state.on_ground {
+            wobble(&mut state, now);
+        }
         let v = state.visuals;
         for i in 1..self.running_engines {
             state.visuals.engine_running[i] = v.engine_running[0];
@@ -517,6 +520,20 @@ impl Peer {
 }
 
 /// `from` moved on for `dt` seconds, straight and level.
+/// Rolls and pitches gently around the circuit's steady attitude, so the
+/// other seat's attitude indicator and yoke visibly move.
+fn wobble(s: &mut FlightState, t: f64) {
+    use std::f64::consts::TAU;
+    let (roll_amp, roll_period) = (12.0, 14.0);
+    let (pitch_amp, pitch_period) = (4.0, 9.0);
+    let roll = TAU * t / roll_period;
+    let pitch = TAU * t / pitch_period;
+    s.phi_deg += (roll_amp * roll.sin()) as f32;
+    s.theta_deg += (pitch_amp * pitch.sin()) as f32;
+    s.rates_deg[0] += (roll_amp * TAU / roll_period * roll.cos()) as f32;
+    s.rates_deg[1] += (pitch_amp * TAU / pitch_period * pitch.cos()) as f32;
+}
+
 fn carry_on(from: &FlightState, dt: f64) -> FlightState {
     const EARTH_RADIUS_M: f64 = 6_371_000.0;
     let mut s = *from;
