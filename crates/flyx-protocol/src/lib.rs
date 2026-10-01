@@ -225,8 +225,9 @@ pub struct FlightState {
     pub height_agl_m: f32,
     pub on_ground: bool,
     pub visuals: Visuals,
-    /// The pilot flying's flight-control inputs, in sync-definition order
-    /// (yoke, pedals, toe brakes, throttles); unused slots are zero.
+    /// The pilot flying's per-frame values in sync-definition order:
+    /// flight-control inputs (yoke, pedals, toe brakes, throttles) and gyro
+    /// instrument readings; unused slots are zero.
     pub controls: [f32; MAX_INPUTS],
 }
 
@@ -237,8 +238,9 @@ pub const WING_PARTS: usize = 6;
 pub const MAX_ENGINES: usize = 8;
 /// Landing gear legs whose deployment is synced.
 pub const MAX_GEAR: usize = 3;
-/// Flight-control inputs carried in a [`FlightState`].
-pub const MAX_INPUTS: usize = 16;
+/// Per-frame values of the pilot flying carried in a [`FlightState`]
+/// (flight-control inputs and gyro instrument readings).
+pub const MAX_INPUTS: usize = 32;
 
 /// Values that make the follower's aircraft look like the authority's.
 ///

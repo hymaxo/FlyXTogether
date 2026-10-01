@@ -220,7 +220,38 @@ index = "per_engine"
 epsilon = 0.00001
 
 # --------------------------------------------------------- pilot flying
-# Flight-control inputs of the pilot flying, shown in the other cockpit.
+# Per-frame values of the pilot flying, played out with the motion and
+# written in the other cockpit every frame: flight-control inputs, and the
+# gyro instrument readings (the following seat's own gyros stop while its
+# flight model is frozen). At most 32 after per-engine expansion.
+[[input]]
+dataref = "sim/cockpit2/controls/total_pitch_ratio"
+[[input]]
+dataref = "sim/cockpit2/controls/total_roll_ratio"
+[[input]]
+dataref = "sim/cockpit2/controls/total_heading_ratio"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/heading_vacuum_deg_mag_{pilot,copilot}"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/pitch_vacuum_deg_pilot"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/roll_vacuum_deg_pilot"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/heading_electric_deg_mag_pilot"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/pitch_electric_deg_pilot"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/roll_electric_deg_pilot"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/heading_AHARS_deg_mag_pilot"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/pitch_AHARS_deg_pilot"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/roll_AHARS_deg_pilot"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/turn_rate_roll_deg_pilot"
+[[input]]
+dataref = "sim/cockpit2/gauges/indicators/slip_deg"
 [[input]]
 dataref = "sim/cockpit2/controls/yoke_pitch_ratio"
 [[input]]

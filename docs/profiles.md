@@ -31,9 +31,12 @@ for one aircraft and mark it as verified.
 | `state` | A simulated value owned by the pilot flying, such as fuel or engine temperature. It is copied to the other seat twice a second. |
 | `local` | Never synced: views, popups, sound volumes and so on. |
 
-The pilot flying's yoke, pedals, toe brakes and throttles (`input`) and the
-overrides the other seat uses while following (`monitor_override`) are
-handled by the built-in list. Profiles rarely need to touch them.
+The pilot flying's per-frame values (`input`) are handled by the built-in
+list, together with the overrides the other seat uses while following
+(`monitor_override`). The per-frame values are the yoke, pedals, toe brakes
+and throttles, plus the gyro instrument readings, because the following
+seat's own gyros stop while it follows. Profiles rarely need to touch
+them.
 
 A command and its result usually both sync. For example, the
 landing-light switch command runs on both seats, and the

@@ -396,12 +396,20 @@ impl Cockpit {
         let inputs = self.definition.of_class(Class::Input);
         for (slot, (_, entry)) in out.iter_mut().zip(inputs) {
             let name = entry.target.to_string();
-            *slot = if name.contains("yoke_roll_ratio") {
+            *slot = if name.contains("roll_ratio") {
                 (state.phi_deg / 40.0).clamp(-1.0, 1.0)
-            } else if name.contains("yoke_pitch_ratio") {
+            } else if name.contains("pitch_ratio") {
                 (0.05 + state.theta_deg / 20.0).clamp(-1.0, 1.0)
             } else if name.contains("throttle_ratio") {
                 throttle
+            } else if name.contains("indicators/heading_") {
+                state.psi_deg
+            } else if name.contains("indicators/pitch_") {
+                state.theta_deg
+            } else if name.contains("indicators/roll_") {
+                state.phi_deg
+            } else if name.contains("turn_rate_roll") {
+                state.phi_deg / 2.0
             } else {
                 0.0
             };
