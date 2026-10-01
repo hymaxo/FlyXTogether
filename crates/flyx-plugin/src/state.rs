@@ -339,10 +339,13 @@ fn on_frame(tick: Tick) -> NextCall {
             if let (Some(a), Some(net)) = (e.authority.as_mut(), e.net.as_ref()) {
                 a.frame(refs, tick.since_last_call, net, e.cockpit.sample_inputs());
             }
-            if let Some(f) = e.follower.as_mut()
-                && let Some(pose) = f.frame(refs)
-            {
-                e.cockpit.write_inputs(&pose.controls);
+            if let Some(f) = e.follower.as_mut() {
+                if let Some(pose) = f.frame(refs) {
+                    e.cockpit.write_inputs(&pose.controls);
+                }
+                for (engine, begin) in f.take_starter_requests() {
+                    e.cockpit.run_starter(engine, begin);
+                }
             }
         }
         e.cockpit.tick();
@@ -480,7 +483,9 @@ fn apply(e: &mut Enabled, outcome: Outcome) {
             }
             Effect::StopFollowing => {
                 if let (Some(f), Some(refs)) = (e.follower.take(), &e.refs) {
-                    f.release(refs);
+                    for (engine, begin) in f.release(refs) {
+                        e.cockpit.run_starter(engine, begin);
+                    }
                 }
                 e.cockpit.set_monitoring(false);
             }

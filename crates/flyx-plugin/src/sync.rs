@@ -29,9 +29,11 @@ const CLAMP_TOP_M: f64 = 50.0;
 /// stopped, or the other way round, before it is set to match: enough for
 /// a forwarded start or shutdown to take effect by itself.
 const ENGINE_MISMATCH_S: f64 = 3.0;
-/// Times an engine is set to match before giving up until the pilot
-/// flying's engine starts or stops again.
+/// Times an engine is started or stopped to match before giving up until
+/// the pilot flying's engine starts or stops again.
 const ENGINE_MATCH_ATTEMPTS: u8 = 2;
+/// Longest the starter is held for one start attempt.
+const CRANK_MAX_S: f64 = 10.0;
 
 const CONTROL_SURFACES: &str = "sim/operation/override/override_control_surfaces";
 
@@ -356,6 +358,11 @@ pub struct Follower {
     /// Per engine: the pilot flying's state the attempts are for, and how
     /// many were made.
     engine_attempts: [(bool, u8); MAX_ENGINES],
+    /// Per engine: since when its starter is held.
+    cranking: [Option<f64>; MAX_ENGINES],
+    /// Starter commands to begin (`true`) or end, run by the cockpit sync
+    /// so they are not forwarded to the other seat.
+    starter_requests: Vec<(usize, bool)>,
     /// This simulator was paused because the pilot flying paused.
     paused_with_pilot_flying: bool,
     crash_logged: bool,
@@ -397,6 +404,8 @@ impl Follower {
             lead_logged: !after_handover,
             engine_mismatch: [None; MAX_ENGINES],
             engine_attempts: [(false, 0); MAX_ENGINES],
+            cranking: [None; MAX_ENGINES],
+            starter_requests: Vec::new(),
             paused_with_pilot_flying: false,
             crash_logged: false,
         }
@@ -452,16 +461,25 @@ impl Follower {
 
     /// Engines normally start and stop by themselves, because their
     /// controls and the forwarded starter are the pilot flying's. One that
-    /// still disagrees after [`ENGINE_MISMATCH_S`] is set to match, at most
-    /// [`ENGINE_MATCH_ATTEMPTS`] times: an engine whose own controls cannot
-    /// keep it running is not restarted over and over.
+    /// still disagrees after [`ENGINE_MISMATCH_S`] (for example because
+    /// this seat joined with its engine off) is started with its starter
+    /// until it runs, or stopped, at most [`ENGINE_MATCH_ATTEMPTS`] times:
+    /// an engine whose own controls cannot keep it running is not cranked
+    /// over and over.
     fn match_engines(&mut self, refs: &Refs, pose: &FlightState, now: f64) {
         let local = refs.engines_running();
-        let mut set = None;
         for i in 0..refs.engines() {
             let wanted = pose.visuals.engine_running[i];
             if self.engine_attempts[i].0 != wanted {
                 self.engine_attempts[i] = (wanted, 0);
+            }
+            if let Some(since) = self.cranking[i] {
+                if local[i] || !wanted || now - since >= CRANK_MAX_S {
+                    self.cranking[i] = None;
+                    self.starter_requests.push((i, false));
+                    info!(engine = i, started = local[i], "starter released");
+                }
+                continue;
             }
             if local[i] == wanted || self.engine_attempts[i].1 > ENGINE_MATCH_ATTEMPTS {
                 self.engine_mismatch[i] = None;
@@ -481,26 +499,35 @@ impl Follower {
                 );
                 continue;
             }
-            let mut running = local;
-            running[i] = wanted;
-            set = Some(running);
-            info!(
-                engine = i,
-                running = wanted,
-                "engine set to match the pilot flying's"
-            );
+            if wanted {
+                info!(
+                    engine = i,
+                    "engine stopped while the pilot flying's runs: cranking it"
+                );
+                self.cranking[i] = Some(now);
+                self.starter_requests.push((i, true));
+            } else {
+                info!(
+                    engine = i,
+                    "engine runs while the pilot flying's is stopped: stopping it"
+                );
+                let mut running = local.map(|r| r as i32);
+                running[i] = 0;
+                refs.engine_running.set(0, &running[..refs.engines()]);
+            }
         }
-        if let Some(running) = set {
-            let engines = refs.engines();
-            refs.engine_running
-                .set(0, &running.map(|r| r as i32)[..engines]);
-        }
+    }
+
+    /// Starter commands to run now: (engine, begin or end).
+    pub fn take_starter_requests(&mut self) -> Vec<(usize, bool)> {
+        std::mem::take(&mut self.starter_requests)
     }
 
     /// Gives the aircraft back to X-Plane: the last pose and its velocities
     /// are written, then the overrides cleared. The flight model was
     /// running all along, so it continues from there without a jump.
-    pub fn release(self, refs: &Refs) {
+    /// Returns the starters still held, which the caller releases.
+    pub fn release(mut self, refs: &Refs) -> Vec<(usize, bool)> {
         if let Some(pose) = &self.last_pose {
             refs.apply(pose, &self.probe, self.resting_height);
         }
@@ -509,6 +536,12 @@ impl Follower {
             run_command("sim/operation/pause_off");
         }
         info!("stopped following: aircraft handed back to X-Plane");
+        for (i, cranking) in self.cranking.iter().enumerate() {
+            if cranking.is_some() {
+                self.starter_requests.push((i, false));
+            }
+        }
+        self.starter_requests
     }
 }
 

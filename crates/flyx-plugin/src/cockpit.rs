@@ -297,6 +297,27 @@ impl CockpitSync {
         self.state.clear();
     }
 
+    /// Holds (`begin`) or releases X-Plane's starter of `engine` on this
+    /// seat only: it runs like a replayed command, so a cockpit that has
+    /// the starter as a button does not forward it to the other seat.
+    pub fn run_starter(&mut self, engine: usize, begin: bool) {
+        let name = format!("sim/starters/engage_starter_{}", engine + 1);
+        let Some(command) = Command::find(&name) else {
+            warn!(name, "starter command not found");
+            return;
+        };
+        if let Some(active) = self.active.as_mut() {
+            active.register.note_replay(self.frame);
+        }
+        self.replaying.set(true);
+        if begin {
+            command.begin();
+        } else {
+            command.end();
+        }
+        self.replaying.set(false);
+    }
+
     /// While following, the pilot monitoring's own hardware, autopilot and
     /// engine must not fight the values it is given.
     pub fn set_monitoring(&mut self, on: bool) {
