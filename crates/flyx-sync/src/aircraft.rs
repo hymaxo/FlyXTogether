@@ -1,42 +1,16 @@
-//! Which aircraft FlyXTogether supports, and how seats compare aircraft.
+//! Identifying the loaded aircraft, and how seats compare aircraft. Every
+//! aircraft is supported; what is synced for it comes from its sync
+//! definition (see [`crate::definition`]).
 
 use std::path::Path;
 
 use flyx_protocol::AircraftId;
 
-/// An aircraft this version can sync.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SupportedAircraft {
-    /// Folder containing the `.acf`.
-    pub folder: &'static str,
-    pub acf: &'static str,
-    /// Name shown to users.
-    pub name: &'static str,
-}
-
-/// The supported aircraft: the three X-Plane 12 Cessna 172 SP variants.
-pub const SUPPORTED: &[SupportedAircraft] = &[
-    SupportedAircraft {
-        folder: "Cessna 172 SP",
-        acf: "Cessna_172SP.acf",
-        name: "Cessna 172 SP",
-    },
-    SupportedAircraft {
-        folder: "Cessna 172 SP",
-        acf: "Cessna_172SP_G1000.acf",
-        name: "Cessna 172 SP G1000",
-    },
-    SupportedAircraft {
-        folder: "Cessna 172 SP",
-        acf: "Cessna_172SP_seaplane.acf",
-        name: "Cessna 172 SP Seaplane",
-    },
-];
-
-/// Identifies an aircraft from the full path of its `.acf` file. A path
-/// that is not an `.acf` file (X-Plane reports the install folder before
-/// any aircraft has loaded) gives an empty identity.
-pub fn identify(acf_path: &Path) -> AircraftId {
+/// Identifies an aircraft from the full path of its `.acf` file and the
+/// name X-Plane shows for it. A path that is not an `.acf` file (X-Plane
+/// reports the install folder before any aircraft has loaded) gives an
+/// empty identity.
+pub fn identify(acf_path: &Path, ui_name: &str) -> AircraftId {
     let is_acf = acf_path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("acf"));
@@ -44,6 +18,7 @@ pub fn identify(acf_path: &Path) -> AircraftId {
         return AircraftId {
             folder: String::new(),
             acf: String::new(),
+            name: String::new(),
         };
     }
     let name = |p: Option<&Path>| {
@@ -54,55 +29,44 @@ pub fn identify(acf_path: &Path) -> AircraftId {
     AircraftId {
         folder: name(acf_path.parent()),
         acf: name(Some(acf_path)),
+        name: ui_name.trim().to_owned(),
     }
 }
 
-/// The supported-aircraft entry for `id`, compared case-insensitively.
-pub fn lookup(id: &AircraftId) -> Option<&'static SupportedAircraft> {
-    SUPPORTED
-        .iter()
-        .find(|s| s.folder.eq_ignore_ascii_case(&id.folder) && s.acf.eq_ignore_ascii_case(&id.acf))
+/// Whether an aircraft is loaded at all.
+pub fn is_loaded(id: &AircraftId) -> bool {
+    !id.acf.is_empty()
 }
 
-pub fn is_supported(id: &AircraftId) -> bool {
-    lookup(id).is_some()
-}
-
-/// Whether two seats have the same aircraft loaded (same folder and variant).
+/// Whether two seats have the same aircraft loaded (same folder and `.acf`;
+/// the variants of an aircraft are different aircraft).
 pub fn same_aircraft(a: &AircraftId, b: &AircraftId) -> bool {
     a.folder.eq_ignore_ascii_case(&b.folder) && a.acf.eq_ignore_ascii_case(&b.acf)
 }
 
-/// Human-readable name: the supported name, or the `.acf` without extension.
+/// Human-readable name: X-Plane's name for it, else the `.acf` file name.
 pub fn display_name(id: &AircraftId) -> String {
-    match lookup(id) {
-        Some(s) => s.name.to_owned(),
-        None if id.acf.is_empty() => "no aircraft".to_owned(),
-        None => id
-            .acf
+    if !is_loaded(id) {
+        "no aircraft".to_owned()
+    } else if !id.name.is_empty() {
+        id.name.clone()
+    } else {
+        id.acf
             .strip_suffix(".acf")
             .unwrap_or(&id.acf)
-            .replace('_', " "),
+            .replace('_', " ")
     }
-}
-
-/// Comma-separated list of supported aircraft names, for messages.
-pub fn supported_list() -> String {
-    SUPPORTED
-        .iter()
-        .map(|s| s.name)
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn id(folder: &str, acf: &str) -> AircraftId {
+    fn id(folder: &str, acf: &str, name: &str) -> AircraftId {
         AircraftId {
             folder: folder.into(),
             acf: acf.into(),
+            name: name.into(),
         }
     }
 
@@ -112,64 +76,41 @@ mod tests {
             "D:/Games/X-Plane 12/Aircraft/Laminar Research/Cessna 172 SP/Cessna_172SP_G1000.acf",
         );
         assert_eq!(
-            identify(path),
-            id("Cessna 172 SP", "Cessna_172SP_G1000.acf")
+            identify(path, " Cessna 172 SP G1000 "),
+            id(
+                "Cessna 172 SP",
+                "Cessna_172SP_G1000.acf",
+                "Cessna 172 SP G1000"
+            )
         );
     }
 
     #[test]
     fn non_acf_path_is_no_aircraft() {
-        let id = identify(Path::new("D:/Games/X-Plane 12/"));
-        assert_eq!(
-            id,
-            AircraftId {
-                folder: String::new(),
-                acf: String::new()
-            }
+        let none = identify(Path::new("D:/Games/X-Plane 12/"), "x");
+        assert_eq!(none, id("", "", ""));
+        assert!(!is_loaded(&none));
+        assert_eq!(display_name(&none), "no aircraft");
+    }
+
+    #[test]
+    fn display_names() {
+        assert_eq!(display_name(&id("A", "a321.acf", "A321neo")), "A321neo");
+        assert_eq!(display_name(&id("A", "Baron_58.acf", "")), "Baron 58");
+    }
+
+    #[test]
+    fn variants_are_different_aircraft_and_names_do_not_matter() {
+        let base = id("Cessna 172 SP", "Cessna_172SP.acf", "Cessna 172 SP");
+        let sea = id(
+            "Cessna 172 SP",
+            "Cessna_172SP_seaplane.acf",
+            "Cessna 172 SP",
         );
-        assert!(!is_supported(&id));
-        assert_eq!(display_name(&id), "no aircraft");
-    }
-
-    #[test]
-    fn supported_variants_case_insensitive() {
-        assert!(is_supported(&id("Cessna 172 SP", "Cessna_172SP.acf")));
-        assert!(is_supported(&id(
-            "cessna 172 sp",
-            "CESSNA_172SP_SEAPLANE.ACF"
-        )));
-        assert_eq!(
-            display_name(&id("Cessna 172 SP", "cessna_172sp_g1000.acf")),
-            "Cessna 172 SP G1000"
-        );
-    }
-
-    #[test]
-    fn unsupported_aircraft() {
-        let a321 = id("ToLissA321", "a321.acf");
-        assert!(!is_supported(&a321));
-        assert_eq!(display_name(&a321), "a321");
-        // Right file name in a different folder is not the Laminar C172.
-        assert!(!is_supported(&id("My C172", "Cessna_172SP.acf")));
-        assert_eq!(display_name(&id("", "")), "no aircraft");
-    }
-
-    #[test]
-    fn different_variants_are_different_aircraft() {
-        let base = id("Cessna 172 SP", "Cessna_172SP.acf");
-        let sea = id("Cessna 172 SP", "Cessna_172SP_seaplane.acf");
         assert!(!same_aircraft(&base, &sea));
         assert!(same_aircraft(
             &base,
-            &id("CESSNA 172 SP", "cessna_172sp.acf")
+            &id("CESSNA 172 SP", "cessna_172sp.acf", "Skyhawk")
         ));
-    }
-
-    #[test]
-    fn supported_list_names_all_variants() {
-        assert_eq!(
-            supported_list(),
-            "Cessna 172 SP, Cessna 172 SP G1000, Cessna 172 SP Seaplane"
-        );
     }
 }

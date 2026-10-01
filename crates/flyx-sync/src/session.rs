@@ -113,9 +113,6 @@ pub enum Refusal {
         joiner_aircraft: AircraftId,
         host_aircraft: AircraftId,
     },
-    UnsupportedAircraft {
-        joiner_aircraft: AircraftId,
-    },
     SessionFull,
 }
 
@@ -209,32 +206,24 @@ impl Session {
 
             // --- Idle ---
             (State::Idle, Event::HostRequested { port, aircraft }) => {
-                if aircraft::is_supported(&aircraft) {
+                if aircraft::is_loaded(&aircraft) {
                     out.clear_notice = true;
                     out.effects.push(StartHost { port });
                     State::StartingHost { port }
                 } else {
-                    out.notice = Some(Notice::Error(format!(
-                        "Hosting needs a supported aircraft: {}. You have the {} loaded.",
-                        aircraft::supported_list(),
-                        aircraft::display_name(&aircraft)
-                    )));
+                    out.notice = Some(Notice::Error("Load an aircraft before hosting.".into()));
                     State::Idle
                 }
             }
             (State::Idle, Event::JoinRequested { address, aircraft }) => {
-                if aircraft::is_supported(&aircraft) {
+                if aircraft::is_loaded(&aircraft) {
                     out.clear_notice = true;
                     out.effects.push(Join {
                         address: address.clone(),
                     });
                     State::Joining { address }
                 } else {
-                    out.notice = Some(Notice::Error(format!(
-                        "Joining needs a supported aircraft: {}. You have the {} loaded.",
-                        aircraft::supported_list(),
-                        aircraft::display_name(&aircraft)
-                    )));
+                    out.notice = Some(Notice::Error("Load an aircraft before joining.".into()));
                     State::Idle
                 }
             }
@@ -386,10 +375,6 @@ impl Session {
                 aircraft::display_name(joiner_aircraft),
                 aircraft::display_name(host_aircraft)
             )),
-            Refusal::UnsupportedAircraft { joiner_aircraft } => Notice::Error(format!(
-                "A crew member tried to join with the {}, which is not supported.",
-                aircraft::display_name(joiner_aircraft)
-            )),
             Refusal::SessionFull => {
                 Notice::Info("Someone tried to join, but the session is full.".into())
             }
@@ -424,10 +409,9 @@ impl Session {
                     "The host is flying the {}. Load the same aircraft and join again.",
                     aircraft::display_name(host_aircraft)
                 ),
-                RejectReason::UnsupportedAircraft => format!(
-                    "Your aircraft is not supported. Supported aircraft: {}.",
-                    aircraft::supported_list()
-                ),
+                RejectReason::UnsupportedAircraft => {
+                    "The host does not accept your aircraft.".into()
+                }
                 RejectReason::SessionFull => "Session full".into(),
                 RejectReason::NotHosting => "The host is not accepting crew right now.".into(),
             },
@@ -452,6 +436,7 @@ mod tests {
         AircraftId {
             folder: "Cessna 172 SP".into(),
             acf: "Cessna_172SP.acf".into(),
+            name: "Cessna 172 SP".into(),
         }
     }
 
@@ -459,13 +444,15 @@ mod tests {
         AircraftId {
             folder: "Cessna 172 SP".into(),
             acf: "Cessna_172SP_seaplane.acf".into(),
+            name: "Cessna 172 SP Seaplane".into(),
         }
     }
 
-    fn a321() -> AircraftId {
+    fn no_aircraft() -> AircraftId {
         AircraftId {
-            folder: "ToLissA321".into(),
-            acf: "a321.acf".into(),
+            folder: String::new(),
+            acf: String::new(),
+            name: String::new(),
         }
     }
 
@@ -546,18 +533,29 @@ mod tests {
         assert!(matches!(out.notice, Some(Notice::Error(ref t)) if t.contains("49700")));
     }
 
-    // Scenario: Unsupported aircraft (host side).
+    // Every aircraft is supported; only having none loaded stops hosting.
     #[test]
-    fn hosting_refused_with_unsupported_aircraft_lists_supported() {
+    fn hosting_needs_an_aircraft_but_any_will_do() {
         let mut s = session();
         let out = s.handle(Event::HostRequested {
             port: 49700,
-            aircraft: a321(),
+            aircraft: no_aircraft(),
         });
         assert_eq!(s.state(), &State::Idle);
         assert!(out.effects.is_empty());
-        let text = notice_text(&out);
-        assert!(text.contains("Cessna 172 SP, Cessna 172 SP G1000, Cessna 172 SP Seaplane"));
+        assert_eq!(notice_text(&out), "Load an aircraft before hosting.");
+
+        let baron = AircraftId {
+            folder: "Beechcraft Baron 58".into(),
+            acf: "Baron_58.acf".into(),
+            name: "Baron 58".into(),
+        };
+        let mut s = session();
+        s.handle(Event::HostRequested {
+            port: 49700,
+            aircraft: baron,
+        });
+        assert_eq!(s.state(), &State::StartingHost { port: 49700 });
     }
 
     // Scenario: Successful join (both sides).
@@ -676,15 +674,15 @@ mod tests {
     }
 
     #[test]
-    fn joining_with_unsupported_aircraft_is_refused_locally() {
+    fn joining_without_an_aircraft_is_refused_locally() {
         let mut s = session();
         let out = s.handle(Event::JoinRequested {
             address: "h".into(),
-            aircraft: a321(),
+            aircraft: no_aircraft(),
         });
         assert!(out.effects.is_empty());
         assert_eq!(s.state(), &State::Idle);
-        assert!(notice_text(&out).contains("Supported") || notice_text(&out).contains("supported"));
+        assert_eq!(notice_text(&out), "Load an aircraft before joining.");
     }
 
     // Scenario: Third seat refused.
@@ -895,7 +893,7 @@ mod tests {
         collect(s.handle(Event::HostFailed(HostFailure::PortUnavailable)));
         collect(session().handle(Event::HostRequested {
             port: 49700,
-            aircraft: a321(),
+            aircraft: no_aircraft(),
         }));
         for refusal in [
             Refusal::BadPassword,
@@ -906,9 +904,6 @@ mod tests {
             Refusal::AircraftMismatch {
                 joiner_aircraft: seaplane(),
                 host_aircraft: c172(),
-            },
-            Refusal::UnsupportedAircraft {
-                joiner_aircraft: a321(),
             },
             Refusal::SessionFull,
         ] {
@@ -926,7 +921,7 @@ mod tests {
         // Joining.
         collect(session().handle(Event::JoinRequested {
             address: address.clone(),
-            aircraft: a321(),
+            aircraft: no_aircraft(),
         }));
         let failures = [
             JoinFailure::Unreachable,
@@ -960,7 +955,7 @@ mod tests {
         }
         collect(joined().handle(Event::AircraftChanged));
 
-        assert_eq!(texts.len(), 27);
+        assert_eq!(texts.len(), 26);
         for text in texts {
             assert!(doc.contains(&text), "docs/hosting.md is missing: {text}");
         }

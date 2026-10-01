@@ -5,13 +5,15 @@ A FlyXTogether session connects two X-Plane computers directly. One pilot
 reachable from the internet. The other pilot **joins** by typing the host's
 address and the session password.
 
-Both pilots need the same aircraft loaded. This version supports the default
-Cessna 172 SP in its three variants (standard, G1000 and seaplane), and both
-seats must use the same variant.
+Both pilots need the same aircraft loaded, in the same version. Any aircraft
+can be used: FlyXTogether works out what to sync from the aircraft's own
+cockpit files. The default Cessna 172 SP (standard, G1000 and seaplane) is
+verified; other aircraft work but are untested, so some of their systems may
+not sync. Variants of an aircraft count as different aircraft.
 
 ## Hosting
 
-1. Load the Cessna 172 SP.
+1. Load your aircraft.
 2. Open **Plugins > FlyXTogether > Open**.
 3. On the **Host** tab, keep port `49700` (or pick another UDP port), enter a
    session password, and press **Host**.
@@ -61,7 +63,7 @@ Options:
 
 ## Joining
 
-1. Load the same aircraft variant as the host.
+1. Load the same aircraft (and variant) as the host.
 2. Open **Plugins > FlyXTogether > Open** and switch to the **Join** tab.
 3. Enter the host's address and the session password, then press **Join**.
    The address can be:
@@ -95,11 +97,10 @@ address, names and versions are examples.
 | Message | What it means |
 |---|---|
 | Port 49700 is already in use. Close the program using it or choose another port. | Another program uses that UDP port. Pick another port, and forward that one instead. |
-| Hosting needs a supported aircraft: Cessna 172 SP, Cessna 172 SP G1000, Cessna 172 SP Seaplane. You have the a321 loaded. | Load one of the supported aircraft first. |
+| Load an aircraft before hosting. | No aircraft is loaded yet. Load one, then press Host. |
 | Someone tried to join with a wrong password. | A join attempt used the wrong password. You keep waiting for crew. |
 | A crew member tried to join with FlyXTogether 0.2.0 (protocol 2), but you have 0.1.0 (protocol 1). The versions are incompatible. | Both of you need compatible FlyXTogether versions; update to the same release. |
 | A crew member tried to join with the Cessna 172 SP Seaplane, but you are flying the Cessna 172 SP. | Your crew must load the same aircraft variant as you. |
-| A crew member tried to join with the a321, which is not supported. | Your crew must load a supported aircraft. |
 | Someone tried to join, but the session is full. | A session has two seats. Your current crew is not affected. |
 | Alex left the session. | Your crew left. You keep hosting and can accept a new join. |
 | Lost connection to Alex. | Nothing was heard from your crew for 10 seconds. You keep hosting. |
@@ -110,13 +111,13 @@ address, names and versions are examples.
 
 | Message | What it means |
 |---|---|
-| Joining needs a supported aircraft: Cessna 172 SP, Cessna 172 SP G1000, Cessna 172 SP Seaplane. You have the a321 loaded. | Load one of the supported aircraft first. |
+| Load an aircraft before joining. | No aircraft is loaded yet. Load the host's aircraft, then press Join. |
 | Could not reach the host at 203.0.113.7:49700. Check the address, and ask the host to check that their UDP port is forwarded to their computer. | Nothing answered within 10 seconds. Check the address; the host should check port forwarding and the firewall prompt. |
 | Wrong password | The password does not match the host's. |
 | Too many attempts. Wait a few seconds and try again. | After a wrong password, the host accepts a new attempt after 2 seconds. |
 | The FlyXTogether versions are incompatible: the host has 0.2.0 (protocol 2), you have 0.1.0 (protocol 1). | Both of you need compatible FlyXTogether versions. |
 | The host is flying the Cessna 172 SP. Load the same aircraft and join again. | Your aircraft variant differs from the host's. |
-| Your aircraft is not supported. Supported aircraft: Cessna 172 SP, Cessna 172 SP G1000, Cessna 172 SP Seaplane. | Load a supported aircraft. |
+| The host does not accept your aircraft. | The host runs a different FlyXTogether release. Both of you should use the same release. |
 | Session full | The host already has crew. |
 | The host is not accepting crew right now. | The host is stopping. Try again later. |
 | The host could not prove it knows the session password. You may not be talking to the real host. | The computer at that address is not the host you expected, or someone is intercepting the connection. Check the address. |

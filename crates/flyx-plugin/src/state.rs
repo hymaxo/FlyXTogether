@@ -458,12 +458,16 @@ pub(crate) fn open_window(e: &mut Enabled) {
 /// The user's aircraft as a protocol identity.
 fn current_aircraft() -> AircraftId {
     let (_file, path) = flyx_xplm::aircraft_model(0);
-    let id = aircraft::identify(&path);
-    info!(
-        folder = %id.folder,
-        acf = %id.acf,
-        supported = aircraft::is_supported(&id),
-        "user aircraft"
-    );
+    let ui_name = flyx_xplm::dataref::ArrayRef::<u8>::find("sim/aircraft/view/acf_ui_name")
+        .map(|r| {
+            let mut bytes = vec![0u8; 260];
+            let n = r.get(0, &mut bytes);
+            bytes.truncate(n);
+            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            String::from_utf8_lossy(&bytes[..end]).into_owned()
+        })
+        .unwrap_or_default();
+    let id = aircraft::identify(&path, &ui_name);
+    info!(folder = %id.folder, acf = %id.acf, name = %id.name, "user aircraft");
     id
 }

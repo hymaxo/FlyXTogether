@@ -1,0 +1,272 @@
+# What FlyXTogether syncs on every aircraft, on top of what it finds in the
+# aircraft's cockpit objects. Same format as the profiles in `profiles/`
+# (see docs/profiles.md). Changing this file changes every aircraft's sync
+# definition identity, so seats running different builds cannot connect.
+format = 1
+name = "built-in"
+
+# ---------------------------------------------------------------- shared
+# Standard cockpit values. Either pilot can change them; the host orders
+# concurrent changes. Not listed on purpose (see the cockpit spike notes in
+# the design): sim/cockpit/autopilot/autopilot_state (writing toggles bits),
+# the ignition key (springs back from START; its commands are forwarded),
+# flap_handle_request_ratio (follows the flap handle).
+
+# Electrical
+[[shared]]
+dataref = "sim/cockpit2/electrical/battery_on"
+index = [0, 1]
+[[shared]]
+dataref = "sim/cockpit2/electrical/generator_on"
+index = "per_engine"
+[[shared]]
+dataref = "sim/cockpit2/electrical/cross_tie"
+[[shared]]
+dataref = "sim/cockpit2/electrical/inverter_on"
+index = [0, 1]
+[[shared]]
+dataref = "sim/cockpit2/switches/avionics_power_on"
+
+# Lights
+[[shared]]
+dataref = "sim/cockpit2/switches/beacon_on"
+[[shared]]
+dataref = "sim/cockpit2/switches/navigation_lights_on"
+[[shared]]
+dataref = "sim/cockpit2/switches/strobe_lights_on"
+[[shared]]
+dataref = "sim/cockpit2/switches/taxi_light_on"
+[[shared]]
+dataref = "sim/cockpit2/switches/landing_lights_on"
+[[shared]]
+dataref = "sim/cockpit2/switches/panel_brightness_ratio"
+index = [0, 1, 2, 3]
+epsilon = 0.01
+[[shared]]
+dataref = "sim/cockpit2/switches/instrument_brightness_ratio"
+index = [0, 1, 2, 3]
+epsilon = 0.01
+
+# Engines and fuel
+[[shared]]
+dataref = "sim/cockpit2/engine/actuators/mixture_ratio"
+index = "per_engine"
+epsilon = 0.002
+[[shared]]
+dataref = "sim/cockpit2/engine/actuators/prop_ratio"
+index = "per_engine"
+epsilon = 0.002
+[[shared]]
+dataref = "sim/cockpit2/engine/actuators/carb_heat_ratio"
+index = "per_engine"
+epsilon = 0.01
+[[shared]]
+dataref = "sim/cockpit2/engine/actuators/cowl_flap_ratio"
+index = "per_engine"
+epsilon = 0.01
+[[shared]]
+dataref = "sim/cockpit2/engine/actuators/fuel_pump_on"
+index = "per_engine"
+[[shared]]
+dataref = "sim/cockpit2/engine/actuators/igniter_on"
+index = "per_engine"
+[[shared]]
+dataref = "sim/cockpit2/fuel/fuel_tank_selector"
+
+# Controls other than the pilot flying's inputs
+[[shared]]
+dataref = "sim/cockpit2/controls/flap_ratio"
+epsilon = 0.002
+[[shared]]
+dataref = "sim/cockpit2/controls/speedbrake_ratio"
+epsilon = 0.002
+[[shared]]
+dataref = "sim/cockpit2/controls/elevator_trim"
+epsilon = 0.001
+[[shared]]
+dataref = "sim/cockpit2/controls/aileron_trim"
+epsilon = 0.001
+[[shared]]
+dataref = "sim/cockpit2/controls/rudder_trim"
+epsilon = 0.001
+[[shared]]
+dataref = "sim/cockpit2/controls/parking_brake_ratio"
+epsilon = 0.01
+[[shared]]
+dataref = "sim/cockpit2/controls/gear_handle_down"
+[[shared]]
+dataref = "sim/cockpit2/controls/water_rudder_handle_ratio"
+epsilon = 0.01
+[[shared]]
+dataref = "sim/cockpit2/switches/door_open"
+index = [0, 1]
+[[shared]]
+dataref = "sim/cockpit2/switches/alternate_static_air_ratio"
+epsilon = 0.01
+[[shared]]
+dataref = "sim/cockpit2/switches/yaw_damper_on"
+
+# Anti-ice
+[[shared]]
+dataref = "sim/cockpit2/ice/ice_pitot_heat_on_pilot"
+[[shared]]
+dataref = "sim/cockpit2/ice/ice_pitot_heat_on_copilot"
+
+# Instruments
+[[shared]]
+dataref = "sim/cockpit2/gauges/actuators/barometer_setting_in_hg_pilot"
+epsilon = 0.001
+[[shared]]
+dataref = "sim/cockpit2/gauges/actuators/barometer_setting_in_hg_copilot"
+epsilon = 0.001
+[[shared]]
+dataref = "sim/cockpit2/gauges/actuators/artificial_horizon_adjust_deg_pilot"
+epsilon = 0.01
+[[shared]]
+dataref = "sim/cockpit/gyros/dg_drift_vac_deg"
+epsilon = 0.01
+[[shared]]
+dataref = "sim/cockpit2/clock_timer/timer_mode"
+
+# Autopilot settings (modes are set by the forwarded cockpit buttons)
+[[shared]]
+dataref = "sim/cockpit2/autopilot/heading_dial_deg_mag_pilot"
+epsilon = 0.01
+[[shared]]
+dataref = "sim/cockpit2/autopilot/altitude_dial_ft"
+epsilon = 0.5
+[[shared]]
+dataref = "sim/cockpit2/autopilot/vvi_dial_fpm"
+epsilon = 0.5
+[[shared]]
+dataref = "sim/cockpit2/autopilot/airspeed_dial_kts_mach"
+epsilon = 0.001
+
+# Radios
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/com{1,2}_frequency_hz_833"
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/com{1,2}_standby_frequency_hz_833"
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/nav{1,2}_frequency_hz"
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/nav{1,2}_standby_frequency_hz"
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/nav{1,2}_obs_deg_mag_{pilot,copilot}"
+epsilon = 0.01
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/adf{1,2}_frequency_hz"
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/adf{1,2}_standby_frequency_hz"
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/adf{1,2}_power"
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/adf1_card_heading_deg_mag_pilot"
+epsilon = 0.01
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/dme_power"
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/HSI_source_select_pilot"
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/transponder_code"
+[[shared]]
+dataref = "sim/cockpit2/radios/actuators/transponder_mode"
+
+# ----------------------------------------------------------------- state
+# Owned by the pilot flying and copied to the other seat. The other seat's
+# engine does not run while it follows, so its gauges come from here.
+[[state]]
+dataref = "sim/flightmodel/weight/m_fuel"
+index = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+epsilon = 0.01
+[[state]]
+dataref = "sim/flightmodel/weight/m_stations"
+index = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+epsilon = 0.01
+[[state]]
+dataref = "sim/flightmodel/weight/m_fixed"
+epsilon = 0.01
+[[state]]
+dataref = "sim/flightmodel/engine/ENGN_tacrad"
+index = "per_engine"
+epsilon = 0.05
+[[state]]
+dataref = "sim/flightmodel/engine/ENGN_EGT_c"
+index = "per_engine"
+epsilon = 0.1
+[[state]]
+dataref = "sim/flightmodel/engine/ENGN_CHT_c"
+index = "per_engine"
+epsilon = 0.1
+[[state]]
+dataref = "sim/flightmodel/engine/ENGN_oil_temp_c"
+index = "per_engine"
+epsilon = 0.1
+[[state]]
+dataref = "sim/flightmodel/engine/ENGN_oil_press_psi"
+index = "per_engine"
+epsilon = 0.1
+[[state]]
+dataref = "sim/flightmodel/engine/ENGN_FF_"
+index = "per_engine"
+epsilon = 0.00001
+
+# --------------------------------------------------------- pilot flying
+# Flight-control inputs of the pilot flying, shown in the other cockpit.
+[[input]]
+dataref = "sim/cockpit2/controls/yoke_pitch_ratio"
+[[input]]
+dataref = "sim/cockpit2/controls/yoke_roll_ratio"
+[[input]]
+dataref = "sim/cockpit2/controls/yoke_heading_ratio"
+[[input]]
+dataref = "sim/cockpit2/controls/left_brake_ratio"
+[[input]]
+dataref = "sim/cockpit2/controls/right_brake_ratio"
+[[input]]
+dataref = "sim/cockpit2/engine/actuators/throttle_ratio"
+index = "per_engine"
+
+# Set on the pilot monitoring's seat while it follows, so its own hardware,
+# autopilot and frozen engine do not fight the values it is given.
+[[monitor_override]]
+dataref = "sim/operation/override/override_joystick"
+[[monitor_override]]
+dataref = "sim/operation/override/override_throttles"
+[[monitor_override]]
+dataref = "sim/operation/override/override_toe_brakes"
+[[monitor_override]]
+dataref = "sim/operation/override/override_autopilot"
+[[monitor_override]]
+dataref = "sim/operation/override/override_itt_egt"
+[[monitor_override]]
+dataref = "sim/operation/override/override_cht_oilt"
+[[monitor_override]]
+dataref = "sim/operation/override/override_fuel_flow"
+
+# ----------------------------------------------------------------- local
+# Things that only concern one seat's view, sound or windows.
+[[local]]
+command = "sim/view/*"
+[[local]]
+command = "sim/general/*"
+[[local]]
+command = "sim/operation/*"
+[[local]]
+command = "sim/replay/*"
+[[local]]
+command = "sim/map/*"
+[[local]]
+command = "*popup*"
+[[local]]
+command = "*popout*"
+[[local]]
+command = "sim/audio_panel/*"
+[[local]]
+command = "sim/annunciator/marker_beacon_mute_or_off"
+[[local]]
+dataref = "*audio_volume*"
+[[local]]
+dataref = "*_volume_*"
+[[local]]
+dataref = "sim/operation/*"

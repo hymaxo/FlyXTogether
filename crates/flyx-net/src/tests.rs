@@ -19,6 +19,7 @@ fn c172() -> AircraftId {
     AircraftId {
         folder: "Cessna 172 SP".into(),
         acf: "Cessna_172SP.acf".into(),
+        name: "Cessna 172 SP".into(),
     }
 }
 
@@ -26,6 +27,7 @@ fn seaplane() -> AircraftId {
     AircraftId {
         folder: "Cessna 172 SP".into(),
         acf: "Cessna_172SP_seaplane.acf".into(),
+        name: "Cessna 172 SP Seaplane".into(),
     }
 }
 
@@ -72,12 +74,16 @@ fn session_event(event: NetEvent) -> Event {
 
 /// Starts hosting on a fresh port and waits until it listens.
 async fn host(password: &str) -> (NetHandle, u16) {
+    host_with(password, c172()).await
+}
+
+async fn host_with(password: &str, aircraft: AircraftId) -> (NetHandle, u16) {
     let port = free_port();
     let net = spawn(&tokio::runtime::Handle::current());
     net.send(NetCommand::Host {
         port,
         password: Password::new(password),
-        local: local("Sam", c172()),
+        local: local("Sam", aircraft),
     });
     wait_event(&net, Duration::from_secs(5), |e| {
         matches!(e, NetEvent::Session(Event::Listening { .. }))
@@ -213,23 +219,15 @@ async fn aircraft_mismatch_names_host_aircraft() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unsupported_aircraft_is_refused() {
-    let (host_net, port) = host("secret").await;
-    let a321 = AircraftId {
-        folder: "ToLissA321".into(),
-        acf: "a321.acf".into(),
+async fn any_aircraft_is_accepted_when_both_seats_fly_it() {
+    let baron = AircraftId {
+        folder: "Beechcraft Baron 58".into(),
+        acf: "Baron_58.acf".into(),
+        name: "Baron 58".into(),
     };
-    let joiner = join(format!("127.0.0.1:{port}"), "secret", "Alex", a321.clone());
-    assert_eq!(
-        join_result(&joiner).await,
-        Event::JoinFailed(JoinFailure::Rejected(RejectReason::UnsupportedAircraft))
-    );
-    assert_eq!(
-        crew_event(&host_net).await,
-        Event::CrewRefused(Refusal::UnsupportedAircraft {
-            joiner_aircraft: a321
-        })
-    );
+    let (_host_net, port) = host_with("secret", baron.clone()).await;
+    let joiner = join(format!("127.0.0.1:{port}"), "secret", "Alex", baron);
+    assert!(matches!(join_result(&joiner).await, Event::Joined { .. }));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

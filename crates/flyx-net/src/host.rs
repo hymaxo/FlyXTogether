@@ -279,14 +279,6 @@ async fn handshake(incoming: quinn::Incoming, ctx: &HostContext) -> Option<Pendi
         }) => (clean_name(&display_name), aircraft),
         other => return protocol_error(&conn, other),
     };
-    if !aircraft::is_supported(&joiner_aircraft) {
-        reject(&conn, &mut send, RejectReason::UnsupportedAircraft).await;
-        ctx.out
-            .session(Event::CrewRefused(Refusal::UnsupportedAircraft {
-                joiner_aircraft,
-            }));
-        return None;
-    }
     if !aircraft::same_aircraft(&joiner_aircraft, &ctx.local.aircraft) {
         reject(
             &conn,

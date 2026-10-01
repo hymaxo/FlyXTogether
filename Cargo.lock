@@ -445,6 +445,10 @@ name = "flyx-sync"
 version = "0.1.0-alpha.1"
 dependencies = [
  "flyx-protocol",
+ "serde",
+ "sha2",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

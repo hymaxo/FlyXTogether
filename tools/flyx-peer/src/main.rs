@@ -104,6 +104,7 @@ async fn run(cli: Cli) {
         aircraft: AircraftId {
             folder: "Cessna 172 SP".into(),
             acf: cli.acf.clone(),
+            name: String::new(),
         },
     };
     let net = flyx_net::spawn(&tokio::runtime::Handle::current());
@@ -328,6 +329,7 @@ fn dummy_local() -> LocalInfo {
         aircraft: AircraftId {
             folder: String::new(),
             acf: String::new(),
+            name: String::new(),
         },
     }
 }

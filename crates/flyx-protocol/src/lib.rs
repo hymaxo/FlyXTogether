@@ -24,11 +24,14 @@ pub const ALPN: &[u8] = b"flyx";
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
 
 /// The aircraft loaded in a simulator: its folder name and `.acf` file name,
-/// e.g. `Cessna 172 SP` / `Cessna_172SP_G1000.acf`.
+/// e.g. `Cessna 172 SP` / `Cessna_172SP_G1000.acf`, plus the name X-Plane
+/// shows for it. Seats compare folder and `.acf` only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AircraftId {
     pub folder: String,
     pub acf: String,
+    /// Display name (`acf_ui_name`); may be empty.
+    pub name: String,
 }
 
 /// Argon2id parameters chosen by the host.
@@ -105,7 +108,8 @@ pub enum RejectReason {
     AircraftMismatch {
         host_aircraft: AircraftId,
     },
-    /// The joiner's aircraft is not supported by this version.
+    /// Not sent since protocol 2 (every aircraft is supported); kept so the
+    /// variants after it keep their encoding.
     UnsupportedAircraft,
     SessionFull,
     /// The host is not accepting joins (e.g. shutting down).
@@ -257,6 +261,7 @@ mod tests {
         AircraftId {
             folder: "Cessna 172 SP".into(),
             acf: "Cessna_172SP.acf".into(),
+            name: "Cessna 172 SP".into(),
         }
     }
 
