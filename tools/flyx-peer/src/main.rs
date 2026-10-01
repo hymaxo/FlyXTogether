@@ -1,18 +1,26 @@
 //! Headless FlyXTogether peer for development.
 //!
-//! `host` plays the authority with a synthetic flight; `join` is a logging
-//! follower that reports how many samples arrive. Together with one
-//! X-Plane, either role of a session can be tested on a single machine.
+//! `host` or `join` a session. While this peer is the pilot flying it flies
+//! a synthetic trajectory; while the other seat flies it logs how many
+//! samples arrive. With `--aircraft` it builds the aircraft's sync
+//! definition like the plugin does, takes part in cockpit sync, and runs
+//! scripted cockpit actions (`--at`). Together with one X-Plane, every role
+//! of a session can be tested on a single machine.
 
+mod cockpit;
+
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use flyx_net::{LocalInfo, NetCommand, NetEvent, NetHandle};
 use flyx_protocol::{AircraftId, ByeReason, FlightState};
 use flyx_sync::Password;
-use flyx_sync::session::{Effect, Event, Notice, Session};
+use flyx_sync::session::{Effect, Event, Notice, Session, State};
 use flyx_sync::trajectory::{Kind, Trajectory};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
+
+use cockpit::{Cockpit, ScriptStep};
 
 #[derive(Parser)]
 #[command(version, about = "Headless FlyXTogether peer for development")]
@@ -25,9 +33,27 @@ struct Cli {
     /// Display name shown to the other seat.
     #[arg(long, global = true, default_value = "flyx-peer")]
     name: String,
-    /// Aircraft file to claim (must match the other seat).
+    /// Aircraft file to claim when `--aircraft` is not given.
     #[arg(long, global = true, default_value = "Cessna_172SP.acf")]
     acf: String,
+    /// Full path of an `.acf` file: build its sync definition like the
+    /// plugin does and take part in cockpit sync.
+    #[arg(long, global = true)]
+    aircraft: Option<PathBuf>,
+    /// Engine count of `--aircraft`.
+    #[arg(long, global = true, default_value_t = 1)]
+    engines: usize,
+    /// Folder of profile files for `--aircraft`.
+    #[arg(long, global = true, default_value = "profiles")]
+    profiles: PathBuf,
+    /// Scripted cockpit actions, relative to the session connecting:
+    /// `<seconds>:set <dataref[i]>=<value>`, `<seconds>:press <command>`,
+    /// `<seconds>:hold <command> <seconds>` or `<seconds>:take`.
+    #[arg(long = "at", global = true)]
+    script: Vec<String>,
+    /// Shortcut for `--at <seconds>:take`.
+    #[arg(long, global = true)]
+    take_controls_after: Option<f64>,
     /// Leave the session gracefully after this many seconds.
     #[arg(long, global = true)]
     leave_after: Option<f64>,
@@ -35,36 +61,44 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Host a session and fly a synthetic trajectory as the authority.
+    /// Host a session; fly a synthetic trajectory while pilot flying.
     Host {
         #[arg(long, default_value_t = flyx_net::DEFAULT_PORT)]
         port: u16,
-        #[arg(long, value_enum, default_value_t = Flight::Circuit)]
-        flight: Flight,
-        /// Centre of the trajectory (default: Seattle-Tacoma, KSEA).
-        #[arg(long, default_value_t = 47.4480)]
-        lat: f64,
-        #[arg(long, default_value_t = -122.3088)]
-        lon: f64,
-        /// Ground elevation at the centre, metres MSL.
-        #[arg(long, default_value_t = 132.0)]
-        elevation: f64,
-        /// Samples per second.
-        #[arg(long, default_value_t = 30.0)]
-        rate: f64,
+        #[command(flatten)]
+        flight: FlightArgs,
         /// End the session this many seconds after the crew joins.
         #[arg(long)]
         end_after_join: Option<f64>,
         /// How the session ends: `graceful` says goodbye, `vanish` exits
-        /// without a word (the follower sees a lost connection).
+        /// without a word (the other seat sees a lost connection).
         #[arg(long, value_enum, default_value_t = EndMode::Graceful)]
         end_mode: EndMode,
     },
-    /// Join a session and log the flight state as a follower.
+    /// Join a session; fly the trajectory if given the controls.
     Join {
         /// Host address, e.g. 127.0.0.1 or 203.0.113.7:49700.
         address: String,
+        #[command(flatten)]
+        flight: FlightArgs,
     },
+}
+
+#[derive(clap::Args, Clone, Copy)]
+struct FlightArgs {
+    #[arg(long, value_enum, default_value_t = Flight::Circuit)]
+    flight: Flight,
+    /// Centre of the trajectory (default: Seattle-Tacoma, KSEA).
+    #[arg(long, default_value_t = 47.4480)]
+    lat: f64,
+    #[arg(long, default_value_t = -122.3088)]
+    lon: f64,
+    /// Ground elevation at the centre, metres MSL.
+    #[arg(long, default_value_t = 132.0)]
+    elevation: f64,
+    /// Samples per second.
+    #[arg(long, default_value_t = 30.0)]
+    rate: f64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -98,220 +132,318 @@ async fn run(cli: Cli) {
     let deadline = cli
         .leave_after
         .map(|s| tokio::time::Instant::now() + Duration::from_secs_f64(s));
+    let mut script = Vec::new();
+    for text in &cli.script {
+        match ScriptStep::parse(text) {
+            Ok(step) => script.push(step),
+            Err(e) => {
+                warn!("bad --at {text:?}: {e}");
+                return;
+            }
+        }
+    }
+    if let Some(t) = cli.take_controls_after {
+        script.push(ScriptStep::take(t));
+    }
+    script.sort_by(|a, b| a.at.total_cmp(&b.at));
+
+    let (aircraft, cockpit) = match &cli.aircraft {
+        Some(path) => match Cockpit::load(path, cli.engines, &cli.profiles) {
+            Ok(c) => (c.aircraft.clone(), Some(c)),
+            Err(e) => {
+                warn!("{e}");
+                return;
+            }
+        },
+        None => (
+            AircraftId {
+                folder: "Cessna 172 SP".into(),
+                acf: cli.acf.clone(),
+                name: String::new(),
+            },
+            None,
+        ),
+    };
     let local = LocalInfo {
         plugin_version: env!("CARGO_PKG_VERSION").to_owned(),
         display_name: cli.name.clone(),
-        aircraft: AircraftId {
-            folder: "Cessna 172 SP".into(),
-            acf: cli.acf.clone(),
-            name: String::new(),
-        },
-        definition: [0; 32],
+        definition: cockpit.as_ref().map_or([0; 32], |c| c.definition.identity),
+        aircraft,
     };
     let net = flyx_net::spawn(&tokio::runtime::Handle::current());
-    let mut session = Session::new(env!("CARGO_PKG_VERSION"));
     let password = Password::new(cli.password);
-
-    match cli.command {
+    let (request, flight, end, is_host) = match cli.command {
         Command::Host {
             port,
             flight,
-            lat,
-            lon,
-            elevation,
-            rate,
             end_after_join,
             end_mode,
-        } => {
-            let trajectory = Trajectory {
-                kind: match flight {
-                    Flight::Circuit => Kind::Circuit,
-                    Flight::Taxi => Kind::Taxi,
-                    Flight::Parked => Kind::Parked,
-                },
-                latitude_deg: lat,
-                longitude_deg: lon,
-                ground_elevation_m: elevation,
-            };
-            let event = Event::HostRequested {
+        } => (
+            Event::HostRequested {
                 port,
                 aircraft: local.aircraft.clone(),
-            };
-            apply(&mut session, event, &net, &password, &local, None);
-            let end = end_after_join.map(|s| (Duration::from_secs_f64(s), end_mode));
-            host_loop(session, net, trajectory, rate, deadline, end).await;
-        }
-        Command::Join { address } => {
-            let event = Event::JoinRequested {
+            },
+            flight,
+            end_after_join.map(|s| (Duration::from_secs_f64(s), end_mode)),
+            true,
+        ),
+        Command::Join { address, flight } => (
+            Event::JoinRequested {
                 address,
                 aircraft: local.aircraft.clone(),
-            };
-            apply(&mut session, event, &net, &password, &local, None);
-            join_loop(session, net, deadline).await;
-        }
-    }
+            },
+            flight,
+            None,
+            false,
+        ),
+    };
+    let mut peer = Peer {
+        session: Session::new(env!("CARGO_PKG_VERSION")),
+        net,
+        password,
+        local,
+        trajectory: Trajectory {
+            kind: match flight.flight {
+                Flight::Circuit => Kind::Circuit,
+                Flight::Taxi => Kind::Taxi,
+                Flight::Parked => Kind::Parked,
+            },
+            latitude_deg: flight.lat,
+            longitude_deg: flight.lon,
+            ground_elevation_m: flight.elevation,
+        },
+        start: Instant::now(),
+        seq: 0,
+        streaming: None,
+        following: false,
+        stats: Stats::default(),
+        cockpit,
+        script,
+        connected_at: None,
+        is_host,
+    };
+    peer.handle(request);
+    peer.run(flight.rate, deadline, end).await;
 }
 
-/// Feeds an event into the session and carries out its effects. Returns
-/// whether streaming (authority) or following (follower) changed.
-fn apply(
-    session: &mut Session,
-    event: Event,
-    net: &NetHandle,
-    password: &Password,
-    local: &LocalInfo,
-    mut active: Option<&mut bool>,
-) {
-    let outcome = session.handle(event);
-    if let Some(notice) = outcome.notice {
-        match notice {
-            Notice::Info(text) => info!("{text}"),
-            Notice::Error(text) => warn!("{text}"),
-        }
-    }
-    for effect in outcome.effects {
-        match effect {
-            Effect::StartHost { port } => net.send(NetCommand::Host {
-                port,
-                password: password.clone(),
-                local: local.clone(),
-            }),
-            Effect::Join { address } => net.send(NetCommand::Join {
-                address,
-                password: password.clone(),
-                local: local.clone(),
-            }),
-            Effect::Disconnect { reason } => net.send(NetCommand::Disconnect { reason }),
-            Effect::SendControls { controls } => net.send(NetCommand::SendControls(controls)),
-            Effect::SendTakeControls { seen_epoch } => {
-                net.send(NetCommand::SendTakeControls { seen_epoch })
-            }
-            Effect::StartStreaming { .. } | Effect::StartFollowing { .. } => {
-                if let Some(a) = active.as_deref_mut() {
-                    *a = true;
-                }
-            }
-            Effect::StopStreaming | Effect::StopFollowing => {
-                if let Some(a) = active.as_deref_mut() {
-                    *a = false;
-                }
-            }
-        }
-    }
-    info!(state = ?session.state(), "session");
-}
-
-async fn host_loop(
-    mut session: Session,
+/// The peer's whole state.
+struct Peer {
+    session: Session,
     net: NetHandle,
+    password: Password,
+    local: LocalInfo,
     trajectory: Trajectory,
-    rate: f64,
-    deadline: Option<tokio::time::Instant>,
-    end: Option<(Duration, EndMode)>,
-) {
-    let mut streaming = false;
-    let mut joined_at: Option<Instant> = None;
-    let start = Instant::now();
-    let mut seq = 0u32;
-    let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / rate.max(1.0)));
-    let password = Password::default();
-    let local = dummy_local();
-    loop {
-        tokio::select! {
-            _ = tick.tick() => {
-                while let Some(event) = net.try_event() {
-                    if let NetEvent::Session(e) = event {
-                        apply(&mut session, e, &net, &password, &local, Some(&mut streaming));
-                    }
-                }
-                if streaming && joined_at.is_none() {
-                    joined_at = Some(Instant::now());
-                } else if !streaming {
-                    joined_at = None;
-                }
-                if let (Some((after, mode)), Some(at)) = (end, joined_at)
-                    && at.elapsed() >= after
-                {
-                    if mode == EndMode::Vanish {
-                        info!("vanishing without a goodbye");
-                        std::process::exit(0);
-                    }
-                    info!("ending the session");
-                    stop(net, ByeReason::StoppedHosting).await;
-                    return;
-                }
-                if streaming {
-                    let state = trajectory.state_at(start.elapsed().as_secs_f64(), seq);
-                    seq = seq.wrapping_add(1);
-                    net.send(NetCommand::SendFlightState(state));
-                }
-                if *session.state() == flyx_sync::session::State::Idle {
-                    info!("hosting ended");
-                    return;
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("stopping");
-                stop(net, ByeReason::StoppedHosting).await;
-                return;
-            }
-            _ = sleep_until(deadline) => {
-                info!("time is up, stopping");
-                stop(net, ByeReason::StoppedHosting).await;
-                return;
-            }
-        }
-    }
+    start: Instant,
+    seq: u32,
+    /// The control epoch being streamed, while pilot flying.
+    streaming: Option<u32>,
+    following: bool,
+    stats: Stats,
+    cockpit: Option<Cockpit>,
+    script: Vec<ScriptStep>,
+    connected_at: Option<Instant>,
+    is_host: bool,
 }
 
-async fn join_loop(mut session: Session, net: NetHandle, deadline: Option<tokio::time::Instant>) {
-    let mut following = false;
-    let mut stats = Stats::default();
-    let mut tick = tokio::time::interval(Duration::from_millis(20));
-    let mut report = Instant::now();
-    let password = Password::default();
-    let local = dummy_local();
-    loop {
-        tokio::select! {
-            _ = tick.tick() => {
-                while let Some(event) = net.try_event() {
-                    match event {
-                        NetEvent::Session(e) => {
-                            apply(&mut session, e, &net, &password, &local, Some(&mut following));
-                        }
-                        NetEvent::Paused(p) => info!(paused = p, "pilot flying pause state"),
-                        NetEvent::Cockpit(message) => info!(?message, "cockpit message"),
-                        NetEvent::Systems { epoch, state, repair } => {
-                            debug!(epoch, state = state.len(), repair = repair.len(), "systems state")
-                        }
-                    }
-                }
-                while let Some(sample) = net.try_sample() {
-                    stats.add(&sample.state, sample.received_at);
-                }
-                if report.elapsed() >= Duration::from_secs(1) {
-                    if following {
-                        stats.report(report.elapsed());
-                    }
-                    stats = Stats { last: stats.last, ..Stats::default() };
-                    report = Instant::now();
-                }
-                if !following && *session.state() == flyx_sync::session::State::Idle {
-                    info!("session ended");
-                    return;
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("leaving");
-                stop(net, ByeReason::Left).await;
-                return;
-            }
-            _ = sleep_until(deadline) => {
-                info!("time is up, leaving");
-                stop(net, ByeReason::Left).await;
-                return;
+impl Peer {
+    /// Feeds an event into the session and carries out its effects.
+    fn handle(&mut self, event: Event) {
+        let outcome = self.session.handle(event);
+        if let Some(notice) = outcome.notice {
+            match notice {
+                Notice::Info(text) => info!("{text}"),
+                Notice::Error(text) => warn!("{text}"),
             }
         }
+        for effect in outcome.effects {
+            match effect {
+                Effect::StartHost { port } => self.net.send(NetCommand::Host {
+                    port,
+                    password: self.password.clone(),
+                    local: self.local.clone(),
+                }),
+                Effect::Join { address } => self.net.send(NetCommand::Join {
+                    address,
+                    password: self.password.clone(),
+                    local: self.local.clone(),
+                }),
+                Effect::Disconnect { reason } => self.net.send(NetCommand::Disconnect { reason }),
+                Effect::SendControls { controls } => {
+                    self.net.send(NetCommand::SendControls(controls))
+                }
+                Effect::SendTakeControls { seen_epoch } => {
+                    self.net.send(NetCommand::SendTakeControls { seen_epoch })
+                }
+                Effect::StartStreaming { epoch } => {
+                    info!(epoch, "pilot flying: streaming the trajectory");
+                    self.streaming = Some(epoch);
+                }
+                Effect::StopStreaming => self.streaming = None,
+                Effect::StartFollowing { epoch, .. } => {
+                    info!(epoch, "pilot monitoring: following");
+                    self.following = true;
+                }
+                Effect::StopFollowing => self.following = false,
+            }
+        }
+        if let Some(line) = self.session.controls_line() {
+            info!("{line}");
+        }
+        let connected = self.session.controls().is_some();
+        match (connected, self.connected_at) {
+            (true, None) => {
+                self.connected_at = Some(Instant::now());
+                if let Some(c) = &mut self.cockpit {
+                    c.connected(self.is_host, &self.net);
+                }
+            }
+            (false, Some(_)) => {
+                self.connected_at = None;
+                if let Some(c) = &mut self.cockpit {
+                    c.disconnected();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn run(
+        mut self,
+        rate: f64,
+        deadline: Option<tokio::time::Instant>,
+        end: Option<(Duration, EndMode)>,
+    ) {
+        let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / rate.max(1.0)));
+        let mut report = Instant::now();
+        let mut frame = 0u64;
+        let reason = loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    frame += 1;
+                    if let Some(reason) = self.tick(frame, end, &mut report) {
+                        break reason;
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    info!("stopping");
+                    break self.leave_reason();
+                }
+                _ = sleep_until(deadline) => {
+                    info!("time is up, stopping");
+                    break self.leave_reason();
+                }
+            }
+        };
+        if let Some(c) = &self.cockpit {
+            c.log_values();
+        }
+        if let Some(reason) = reason {
+            stop(self.net, reason).await;
+        }
+    }
+
+    fn leave_reason(&self) -> Option<ByeReason> {
+        Some(if self.is_host {
+            ByeReason::StoppedHosting
+        } else {
+            ByeReason::Left
+        })
+    }
+
+    /// One tick. Returns `Some` to stop (with the goodbye to send, if any).
+    fn tick(
+        &mut self,
+        frame: u64,
+        end: Option<(Duration, EndMode)>,
+        report: &mut Instant,
+    ) -> Option<Option<ByeReason>> {
+        while let Some(event) = self.net.try_event() {
+            match event {
+                NetEvent::Session(e) => self.handle(e),
+                NetEvent::Paused(p) => info!(paused = p, "pilot flying pause state"),
+                NetEvent::Cockpit(message) => {
+                    if let Some(c) = &mut self.cockpit {
+                        c.receive(
+                            message,
+                            frame,
+                            self.start.elapsed().as_secs_f64(),
+                            &self.net,
+                        );
+                    } else {
+                        info!(?message, "cockpit message");
+                    }
+                }
+                NetEvent::Systems {
+                    epoch,
+                    state,
+                    repair,
+                } => {
+                    if let Some(c) = &mut self.cockpit {
+                        c.systems(
+                            epoch,
+                            &state,
+                            &repair,
+                            self.start.elapsed().as_secs_f64(),
+                            &self.net,
+                        );
+                    }
+                }
+            }
+        }
+        while let Some(sample) = self.net.try_sample() {
+            if self.following {
+                self.stats.add(&sample.state, sample.received_at);
+            }
+        }
+        let now = self.start.elapsed().as_secs_f64();
+        if let Some(at) = self.connected_at {
+            let since = at.elapsed().as_secs_f64();
+            while self.script.first().is_some_and(|s| s.at <= since) {
+                let step = self.script.remove(0);
+                if step.is_take() {
+                    info!("script: taking the controls");
+                    self.handle(Event::TakeControlsRequested);
+                } else if let Some(c) = &mut self.cockpit {
+                    c.run(&step, now, &self.net);
+                } else {
+                    warn!("script step needs --aircraft: {step:?}");
+                }
+            }
+            if let Some((after, mode)) = end
+                && at.elapsed() >= after
+            {
+                if mode == EndMode::Vanish {
+                    info!("vanishing without a goodbye");
+                    std::process::exit(0);
+                }
+                info!("ending the session");
+                return Some(Some(ByeReason::StoppedHosting));
+            }
+        }
+        if let Some(c) = &mut self.cockpit {
+            c.frame(frame, now, self.streaming, &self.net);
+        }
+        if let Some(epoch) = self.streaming {
+            let mut state = self.trajectory.state_at(now, self.seq);
+            state.epoch = epoch;
+            self.seq = self.seq.wrapping_add(1);
+            self.net.send(NetCommand::SendFlightState(state));
+        }
+        if report.elapsed() >= Duration::from_secs(1) {
+            if self.following {
+                self.stats.report(report.elapsed());
+            }
+            self.stats = Stats {
+                last: self.stats.last,
+                ..Stats::default()
+            };
+            *report = Instant::now();
+        }
+        if *self.session.state() == State::Idle {
+            info!("session ended");
+            return Some(None);
+        }
+        None
     }
 }
 
@@ -329,22 +461,7 @@ async fn stop(net: NetHandle, reason: ByeReason) {
         .ok();
 }
 
-fn dummy_local() -> LocalInfo {
-    // Only needed for effects that start new activities, which do not
-    // happen after the initial request.
-    LocalInfo {
-        plugin_version: String::new(),
-        display_name: String::new(),
-        aircraft: AircraftId {
-            folder: String::new(),
-            acf: String::new(),
-            name: String::new(),
-        },
-        definition: [0; 32],
-    }
-}
-
-/// Per-second receive statistics for the follower.
+/// Per-second receive statistics while following.
 #[derive(Default)]
 struct Stats {
     count: u32,
@@ -385,8 +502,8 @@ impl Stats {
             .latest
             .map(|s| {
                 format!(
-                    "{:.5},{:.5} {:.0} m hdg {:.0}",
-                    s.latitude_deg, s.longitude_deg, s.elevation_m, s.psi_deg
+                    "{:.5},{:.5} {:.0} m hdg {:.0} epoch {}",
+                    s.latitude_deg, s.longitude_deg, s.elevation_m, s.psi_deg, s.epoch
                 )
             })
             .unwrap_or_default();
