@@ -99,7 +99,7 @@ address, names and versions are examples.
 | Port 49700 is already in use. Close the program using it or choose another port. | Another program uses that UDP port. Pick another port, and forward that one instead. |
 | Load an aircraft before hosting. | No aircraft is loaded yet. Load one, then press Host. |
 | Someone tried to join with a wrong password. | A join attempt used the wrong password. You keep waiting for crew. |
-| A crew member tried to join with FlyXTogether 0.2.0 (protocol 2), but you have 0.1.0 (protocol 1). The versions are incompatible. | Both of you need compatible FlyXTogether versions; update to the same release. |
+| A crew member tried to join with FlyXTogether 0.1.0 (protocol 1), but you have 0.2.0 (protocol 2). The versions are incompatible. | Both of you need compatible FlyXTogether versions; update to the same release. |
 | A crew member tried to join with the Cessna 172 SP Seaplane, but you are flying the Cessna 172 SP. | Your crew must load the same aircraft variant as you. |
 | Someone tried to join, but the session is full. | A session has two seats. Your current crew is not affected. |
 | Alex left the session. | Your crew left. You keep hosting and can accept a new join. |
@@ -115,7 +115,7 @@ address, names and versions are examples.
 | Could not reach the host at 203.0.113.7:49700. Check the address, and ask the host to check that their UDP port is forwarded to their computer. | Nothing answered within 10 seconds. Check the address; the host should check port forwarding and the firewall prompt. |
 | Wrong password | The password does not match the host's. |
 | Too many attempts. Wait a few seconds and try again. | After a wrong password, the host accepts a new attempt after 2 seconds. |
-| The FlyXTogether versions are incompatible: the host has 0.2.0 (protocol 2), you have 0.1.0 (protocol 1). | Both of you need compatible FlyXTogether versions. |
+| The FlyXTogether versions are incompatible: the host has 0.1.0 (protocol 1), you have 0.2.0 (protocol 2). | Both of you need compatible FlyXTogether versions. |
 | The host is flying the Cessna 172 SP. Load the same aircraft and join again. | Your aircraft variant differs from the host's. |
 | The host does not accept your aircraft. | The host runs a different FlyXTogether release. Both of you should use the same release. |
 | Session full | The host already has crew. |

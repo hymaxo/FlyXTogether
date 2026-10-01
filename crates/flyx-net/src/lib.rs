@@ -38,6 +38,8 @@ pub struct LocalInfo {
     pub plugin_version: String,
     pub display_name: String,
     pub aircraft: AircraftId,
+    /// Identity of this seat's sync definition for `aircraft`.
+    pub definition: [u8; 32],
 }
 
 #[derive(Debug)]
@@ -79,6 +81,9 @@ pub struct ReceivedState {
 
 /// Commands from the manager to the running host or join task.
 #[derive(Debug)]
+// Flight state is the hot path and must not allocate; the other variants
+// are rare, so the size difference is accepted.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ActivityCommand {
     FlightState(FlightState),
     Paused(bool),

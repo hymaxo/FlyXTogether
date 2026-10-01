@@ -383,7 +383,7 @@ fn apply(e: &mut Enabled, outcome: Outcome) {
                 },
             ),
             Effect::Disconnect { reason } => send(e, NetCommand::Disconnect { reason }),
-            Effect::StartStreaming => e.authority = Some(Authority::new()),
+            Effect::StartStreaming => e.authority = Some(Authority::new(0)),
             Effect::StopStreaming => e.authority = None,
             Effect::StartFollowing => {
                 if let Some(refs) = &e.refs {
@@ -418,6 +418,7 @@ fn local_info(e: &Enabled) -> LocalInfo {
         plugin_version: VERSION.to_owned(),
         display_name: e.settings.display_name.clone(),
         aircraft: e.aircraft.clone(),
+        definition: [0; 32],
     }
 }
 

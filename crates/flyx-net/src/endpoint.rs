@@ -388,6 +388,7 @@ mod tests {
         let datagram = conn.read_datagram().await.unwrap();
         match Datagram::decode(&datagram).unwrap() {
             Datagram::FlightState(s) => assert_eq!(s.seq, 42),
+            other => panic!("unexpected {other:?}"),
         }
         conn.close(VarInt::from_u32(0), b"done");
         host_task.await.unwrap();

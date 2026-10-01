@@ -70,6 +70,7 @@ pub(crate) async fn run(
             datagram = conn.read_datagram() => match datagram {
                 Ok(bytes) => match Datagram::decode(&bytes) {
                     Ok(Datagram::FlightState(state)) => out.sample(state),
+                    Ok(other) => debug!(?other, "ignoring datagram from host"),
                     Err(e) => debug!(%e, "bad datagram"),
                 },
                 Err(e) => {
@@ -211,6 +212,7 @@ async fn handshake(
         &Control::Join {
             display_name: local.display_name.clone(),
             aircraft: local.aircraft.clone(),
+            definition: local.definition,
         },
     )
     .await

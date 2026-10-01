@@ -6,6 +6,9 @@ use flyx_protocol::{AircraftId, ByeReason, PROTOCOL_VERSION, RejectReason};
 
 use crate::aircraft;
 
+/// Shown on both seats when their sync definitions differ.
+const DEFINITION_MISMATCH: &str = "The aircraft files or profiles differ between the two seats.      Both pilots need the same aircraft version and the same FlyXTogether release.";
+
 /// This seat's role in a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -114,6 +117,8 @@ pub enum Refusal {
         host_aircraft: AircraftId,
     },
     SessionFull,
+    /// The joiner's sync definition differs from the host's.
+    DefinitionMismatch,
 }
 
 /// Why the other seat left.
@@ -378,6 +383,7 @@ impl Session {
             Refusal::SessionFull => {
                 Notice::Info("Someone tried to join, but the session is full.".into())
             }
+            Refusal::DefinitionMismatch => Notice::Error(DEFINITION_MISMATCH.into()),
         }
     }
 
@@ -412,6 +418,7 @@ impl Session {
                 RejectReason::UnsupportedAircraft => {
                     "The host does not accept your aircraft.".into()
                 }
+                RejectReason::DefinitionMismatch => DEFINITION_MISMATCH.into(),
                 RejectReason::SessionFull => "Session full".into(),
                 RejectReason::NotHosting => "The host is not accepting crew right now.".into(),
             },
@@ -457,7 +464,7 @@ mod tests {
     }
 
     fn session() -> Session {
-        Session::new("0.1.0")
+        Session::new("0.2.0")
     }
 
     fn hosting_waiting() -> Session {
@@ -634,12 +641,12 @@ mod tests {
         });
         let out = j.handle(Event::JoinFailed(JoinFailure::Rejected(
             RejectReason::VersionMismatch {
-                host_protocol_version: 2,
-                host_plugin_version: "0.2.0".into(),
+                host_protocol_version: 3,
+                host_plugin_version: "0.3.0".into(),
             },
         )));
         let text = notice_text(&out);
-        assert!(text.contains("0.2.0") && text.contains("0.1.0"), "{text}");
+        assert!(text.contains("0.3.0") && text.contains("0.2.0"), "{text}");
 
         let mut h = hosting_waiting();
         let out = h.handle(Event::CrewRefused(Refusal::VersionMismatch {
@@ -647,7 +654,7 @@ mod tests {
             joiner_protocol_version: 3,
         }));
         let text = notice_text(&out);
-        assert!(text.contains("0.3.0") && text.contains("0.1.0"), "{text}");
+        assert!(text.contains("0.3.0") && text.contains("0.2.0"), "{text}");
     }
 
     // Scenario: Different aircraft (both windows name the host's aircraft).
@@ -898,8 +905,8 @@ mod tests {
         for refusal in [
             Refusal::BadPassword,
             Refusal::VersionMismatch {
-                joiner_plugin_version: "0.2.0".into(),
-                joiner_protocol_version: 2,
+                joiner_plugin_version: "0.1.0".into(),
+                joiner_protocol_version: 1,
             },
             Refusal::AircraftMismatch {
                 joiner_aircraft: seaplane(),
@@ -928,8 +935,8 @@ mod tests {
             JoinFailure::Rejected(RejectReason::BadPassword),
             JoinFailure::Rejected(RejectReason::TooManyAttempts),
             JoinFailure::Rejected(RejectReason::VersionMismatch {
-                host_protocol_version: 2,
-                host_plugin_version: "0.2.0".into(),
+                host_protocol_version: 1,
+                host_plugin_version: "0.1.0".into(),
             }),
             JoinFailure::Rejected(RejectReason::AircraftMismatch {
                 host_aircraft: c172(),

@@ -272,6 +272,7 @@ impl Playout {
         out.height_agl_m = lerp(a.height_agl_m, b.height_agl_m, u as f32);
         out.on_ground = if u < 0.5 { a.on_ground } else { b.on_ground };
         out.visuals = lerp_visuals(&a.visuals, &b.visuals, u as f32);
+        out.controls = std::array::from_fn(|i| lerp(a.controls[i], b.controls[i], u as f32));
         out
     }
 }
@@ -393,7 +394,10 @@ fn lerp_visuals(a: &Visuals, b: &Visuals, u: f32) -> Visuals {
         } else {
             b.engine_running
         },
-        prop_speed_rad_s: lerp(a.prop_speed_rad_s, b.prop_speed_rad_s, u),
+        prop_speed_rad_s: std::array::from_fn(|i| {
+            lerp(a.prop_speed_rad_s[i], b.prop_speed_rad_s[i], u)
+        }),
+        gear_deploy: std::array::from_fn(|i| lerp(a.gear_deploy[i], b.gear_deploy[i], u)),
     }
 }
 

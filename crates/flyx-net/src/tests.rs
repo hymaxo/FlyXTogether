@@ -36,6 +36,7 @@ fn local(name: &str, aircraft: AircraftId) -> LocalInfo {
         plugin_version: "0.1.0".into(),
         display_name: name.into(),
         aircraft,
+        definition: [1; 32],
     }
 }
 

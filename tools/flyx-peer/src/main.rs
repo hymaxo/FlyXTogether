@@ -106,6 +106,7 @@ async fn run(cli: Cli) {
             acf: cli.acf.clone(),
             name: String::new(),
         },
+        definition: [0; 32],
     };
     let net = flyx_net::spawn(&tokio::runtime::Handle::current());
     let mut session = Session::new(env!("CARGO_PKG_VERSION"));
@@ -331,6 +332,7 @@ fn dummy_local() -> LocalInfo {
             acf: String::new(),
             name: String::new(),
         },
+        definition: [0; 32],
     }
 }
 

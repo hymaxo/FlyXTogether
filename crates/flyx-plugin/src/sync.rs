@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use flyx_net::{NetCommand, NetHandle, ReceivedState};
-use flyx_protocol::{FlightState, Visuals, WING_PARTS};
+use flyx_protocol::{FlightState, MAX_ENGINES, MAX_GEAR, MAX_INPUTS, Visuals, WING_PARTS};
 use flyx_sync::playout::Playout;
 use flyx_xplm::dataref::{ArrayRef, DataRef};
 use flyx_xplm::scenery::{TerrainProbe, world_to_local};
@@ -46,6 +46,11 @@ pub struct Refs {
     steer: ArrayRef<f32>,
     engine_running: ArrayRef<i32>,
     prop_speed: ArrayRef<f32>,
+    num_engines: DataRef<i32>,
+    /// Gear deployment as X-Plane reports it (read-only)...
+    gear_deploy: ArrayRef<f32>,
+    /// ...and the deployment state the follower writes.
+    gear_deploy_set: ArrayRef<f32>,
     planepath: ArrayRef<i32>,
     control_surfaces: DataRef<i32>,
 }
@@ -90,6 +95,9 @@ impl Refs {
             steer: array("sim/flightmodel2/gear/tire_steer_actual_deg")?,
             engine_running: array("sim/flightmodel/engine/ENGN_running")?,
             prop_speed: array("sim/flightmodel/engine/POINT_tacrad")?,
+            num_engines: scalar("sim/aircraft/engine/acf_num_engines")?,
+            gear_deploy: array("sim/flightmodel2/gear/deploy_ratio")?,
+            gear_deploy_set: array("sim/aircraft/parts/acf_gear_deploy")?,
             planepath: array(PLANEPATH)?,
             control_surfaces: scalar(CONTROL_SURFACES)?,
         })
@@ -105,10 +113,23 @@ impl Refs {
         out
     }
 
+    /// Engines of the loaded aircraft whose visuals are synced.
+    fn engines(&self) -> usize {
+        (self.num_engines.get().max(0) as usize).min(MAX_ENGINES)
+    }
+
     /// The user's aircraft as a flight-state sample.
-    fn sample(&self, seq: u32, sim_time: f64) -> FlightState {
+    fn sample(&self, epoch: u32, seq: u32, sim_time: f64) -> FlightState {
         let get3 = |r: &[DataRef<f32>; 3]| [r[0].get(), r[1].get(), r[2].get()];
+        let engines = self.engines();
+        let mut running = [0i32; MAX_ENGINES];
+        self.engine_running.get(0, &mut running[..engines]);
+        let mut prop_speed = [0.0f32; MAX_ENGINES];
+        self.prop_speed.get(0, &mut prop_speed[..engines]);
+        let mut gear_deploy = [0.0f32; MAX_GEAR];
+        self.gear_deploy.get(0, &mut gear_deploy);
         FlightState {
+            epoch,
             seq,
             sim_time,
             latitude_deg: self.latitude.get(),
@@ -128,9 +149,11 @@ impl Refs {
                 rudder_deg: Self::parts(&self.rudder),
                 flap_deg: Self::parts(&self.flap),
                 nosewheel_steer_deg: self.steer.get_one(0),
-                engine_running: self.engine_running.get_one(0) != 0,
-                prop_speed_rad_s: self.prop_speed.get_one(0),
+                engine_running: running.map(|r| r != 0),
+                prop_speed_rad_s: prop_speed,
+                gear_deploy,
             },
+            controls: [0.0; MAX_INPUTS],
         }
     }
 
@@ -192,8 +215,11 @@ impl Refs {
         self.rudder.set(0, &v.rudder_deg);
         self.flap.set(0, &v.flap_deg);
         self.steer.set_one(0, v.nosewheel_steer_deg);
-        self.engine_running.set_one(0, v.engine_running as i32);
-        self.prop_speed.set_one(0, v.prop_speed_rad_s);
+        let engines = self.engines();
+        let running = v.engine_running.map(|r| r as i32);
+        self.engine_running.set(0, &running[..engines]);
+        self.prop_speed.set(0, &v.prop_speed_rad_s[..engines]);
+        self.gear_deploy_set.set(0, &v.gear_deploy);
     }
 }
 
@@ -218,6 +244,8 @@ fn ogl_quaternion(psi_deg: f32, theta_deg: f32, phi_deg: f32) -> [f32; 4] {
 
 /// The authority's sampling loop.
 pub struct Authority {
+    /// Control epoch stamped on every sample.
+    epoch: u32,
     /// Seconds of unpaused simulator time since streaming started.
     clock: f64,
     next_send: f64,
@@ -226,9 +254,10 @@ pub struct Authority {
 }
 
 impl Authority {
-    pub fn new() -> Self {
-        info!("streaming flight state");
+    pub fn new(epoch: u32) -> Self {
+        info!(epoch, "streaming flight state");
         Self {
+            epoch,
             clock: 0.0,
             next_send: 0.0,
             seq: 0,
@@ -250,7 +279,7 @@ impl Authority {
             return;
         }
         net.send(NetCommand::SendFlightState(
-            refs.sample(self.seq, self.clock),
+            refs.sample(self.epoch, self.seq, self.clock),
         ));
         self.seq = self.seq.wrapping_add(1);
         self.next_send += 1.0 / SEND_RATE;

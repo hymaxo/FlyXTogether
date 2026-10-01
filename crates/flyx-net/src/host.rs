@@ -272,11 +272,12 @@ async fn handshake(incoming: quinn::Incoming, ctx: &HostContext) -> Option<Pendi
         .await
         .ok()?;
 
-    let (name, joiner_aircraft) = match control::expect(&mut reader).await {
+    let (name, joiner_aircraft, joiner_definition) = match control::expect(&mut reader).await {
         Ok(Control::Join {
             display_name,
             aircraft,
-        }) => (clean_name(&display_name), aircraft),
+            definition,
+        }) => (clean_name(&display_name), aircraft, definition),
         other => return protocol_error(&conn, other),
     };
     if !aircraft::same_aircraft(&joiner_aircraft, &ctx.local.aircraft) {
@@ -293,6 +294,12 @@ async fn handshake(incoming: quinn::Incoming, ctx: &HostContext) -> Option<Pendi
                 joiner_aircraft,
                 host_aircraft: ctx.local.aircraft.clone(),
             }));
+        return None;
+    }
+    if joiner_definition != ctx.local.definition {
+        reject(&conn, &mut send, RejectReason::DefinitionMismatch).await;
+        ctx.out
+            .session(Event::CrewRefused(Refusal::DefinitionMismatch));
         return None;
     }
     Some(Pending {

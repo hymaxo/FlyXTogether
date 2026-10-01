@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// (variant 6) and `RejectReason::VersionMismatch` (variant 2) keep their
 /// layout forever, so that any two versions can tell each other which
 /// versions they run.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// QUIC ALPN identifier. It never changes: versions are compared in
 /// `Control::Hello` so that mismatches can be reported to the user instead
@@ -77,10 +77,12 @@ pub enum Control {
     ClientProof { mac: [u8; 32] },
     /// Host -> joiner: the host's proof of the same password.
     HostProof { mac: [u8; 32] },
-    /// Joiner -> host, after both proofs: who is joining with what aircraft.
+    /// Joiner -> host, after both proofs: who is joining with what aircraft,
+    /// and the identity of the joiner's sync definition for it.
     Join {
         display_name: String,
         aircraft: AircraftId,
+        definition: [u8; 32],
     },
     /// Host -> joiner: admitted to the session.
     Welcome {
@@ -93,6 +95,49 @@ pub enum Control {
     Paused(bool),
     /// Either side: leaving the session on purpose.
     Bye(ByeReason),
+    // Variants below were added in protocol 2. New variants go at the end.
+    /// Crew -> host: the crew wants the controls. `seen_epoch` is the
+    /// control epoch the crew knew when asking; stale requests are dropped.
+    TakeControls { seen_epoch: u32 },
+    /// Host -> crew: who has the controls from `epoch` on.
+    Controls { epoch: u32, pilot_flying: Seat },
+    /// Crew -> host: the crew changed a shared cockpit value. `req`
+    /// increases with every change the crew sends.
+    Change { key: u16, value: Value, req: u32 },
+    /// Host -> crew: a shared cockpit value, in the host's order. `ack` is
+    /// the crew's `req` when the value comes from the crew's change.
+    Set {
+        key: u16,
+        value: Value,
+        ack: Option<u32>,
+    },
+    /// Either side: a cockpit command was pressed or released.
+    Command { key: u16, phase: CommandPhase },
+    /// Host -> crew, right after `Welcome`: every shared and state value.
+    Snapshot { values: Vec<(u16, Value)> },
+}
+
+/// One of the two seats of a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Seat {
+    Host,
+    Crew,
+}
+
+/// A dataref value. Keys index the sync definition both seats share.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum Value {
+    Int(i32),
+    Float(f32),
+    Double(f64),
+}
+
+/// Forwarded command phases. Held commands are replayed from `Begin` to
+/// `End`; a press-and-release is a `Begin` followed by an `End`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommandPhase {
+    Begin,
+    End,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +159,8 @@ pub enum RejectReason {
     SessionFull,
     /// The host is not accepting joins (e.g. shutting down).
     NotHosting,
+    /// The seats' sync definitions for the aircraft differ (protocol 2).
+    DefinitionMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,8 +179,18 @@ pub enum ByeReason {
 
 /// Messages sent as QUIC datagrams.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// Flight state is the hot path and must not allocate; the other variants
+// are rare, so the size difference is accepted.
+#[allow(clippy::large_enum_variant)]
 pub enum Datagram {
     FlightState(FlightState),
+    /// Pilot flying -> pilot monitoring, twice a second: systems state and
+    /// a slice of the shared values for drift repair (protocol 2).
+    Systems {
+        epoch: u32,
+        state: Vec<(u16, Value)>,
+        repair: Vec<(u16, Value)>,
+    },
 }
 
 /// One sample of the authority's aircraft state.
@@ -144,6 +201,9 @@ pub enum Datagram {
 /// near the aircraft.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct FlightState {
+    /// Control epoch of the pilot flying that sent it; samples from an
+    /// earlier epoch are dropped after a handover.
+    pub epoch: u32,
     /// Increases by one per sample; used to drop stale datagrams.
     pub seq: u32,
     /// Authority simulator time in seconds (stops while paused).
@@ -165,11 +225,20 @@ pub struct FlightState {
     pub height_agl_m: f32,
     pub on_ground: bool,
     pub visuals: Visuals,
+    /// The pilot flying's flight-control inputs, in sync-definition order
+    /// (yoke, pedals, toe brakes, throttles); unused slots are zero.
+    pub controls: [f32; MAX_INPUTS],
 }
 
 /// Number of wing parts whose control surfaces are synced. The Cessna
 /// 172 SP uses parts 0-5.
 pub const WING_PARTS: usize = 6;
+/// Engines whose visuals are synced.
+pub const MAX_ENGINES: usize = 8;
+/// Landing gear legs whose deployment is synced.
+pub const MAX_GEAR: usize = 3;
+/// Flight-control inputs carried in a [`FlightState`].
+pub const MAX_INPUTS: usize = 16;
 
 /// Values that make the follower's aircraft look like the authority's.
 ///
@@ -184,10 +253,12 @@ pub struct Visuals {
     pub flap_deg: [f32; WING_PARTS],
     /// Nose wheel steering angle, degrees, positive right.
     pub nosewheel_steer_deg: f32,
-    pub engine_running: bool,
+    pub engine_running: [bool; MAX_ENGINES],
     /// Propeller speed in radians per second; the follower's X-Plane
     /// animates the propeller from it.
-    pub prop_speed_rad_s: f32,
+    pub prop_speed_rad_s: [f32; MAX_ENGINES],
+    /// Gear deployment, 0 (up) to 1 (down), per leg.
+    pub gear_deploy: [f32; MAX_GEAR],
 }
 
 /// Errors when decoding frames or datagrams.
@@ -266,7 +337,10 @@ mod tests {
     }
 
     fn sample_state() -> FlightState {
+        let mut controls = [0.0; MAX_INPUTS];
+        controls[..7].copy_from_slice(&[0.1, -0.2, 0.05, 0.0, 0.0, 0.85, 0.85]);
         FlightState {
+            epoch: 3,
             seq: 4_000_000_000,
             sim_time: 12345.678,
             latitude_deg: 47.449_888_123,
@@ -286,9 +360,11 @@ mod tests {
                 rudder_deg: [-3.0, 3.0, -3.0, 3.0, 2.9, -2.9],
                 flap_deg: [15.0, 15.0, 15.0, 15.0, 15.0, 15.0],
                 nosewheel_steer_deg: -7.5,
-                engine_running: true,
-                prop_speed_rad_s: 251.3,
+                engine_running: [true, true, false, false, false, false, false, false],
+                prop_speed_rad_s: [251.3, 250.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                gear_deploy: [1.0, 0.5, 0.25],
             },
+            controls,
         }
     }
 
@@ -307,6 +383,7 @@ mod tests {
             Control::Join {
                 display_name: "Alex".into(),
                 aircraft: c172(),
+                definition: [9; 32],
             },
             Control::Welcome {
                 display_name: "Sam".into(),
@@ -330,6 +407,38 @@ mod tests {
             Control::Bye(ByeReason::AircraftChanged),
             Control::Bye(ByeReason::PluginStopped),
             Control::Bye(ByeReason::InternalError),
+            Control::Reject(RejectReason::DefinitionMismatch),
+            Control::TakeControls { seen_epoch: 4 },
+            Control::Controls {
+                epoch: 5,
+                pilot_flying: Seat::Crew,
+            },
+            Control::Change {
+                key: 17,
+                value: Value::Float(0.5),
+                req: 99,
+            },
+            Control::Set {
+                key: 17,
+                value: Value::Int(1),
+                ack: Some(99),
+            },
+            Control::Set {
+                key: 300,
+                value: Value::Double(29.92),
+                ack: None,
+            },
+            Control::Command {
+                key: 42,
+                phase: CommandPhase::Begin,
+            },
+            Control::Command {
+                key: 42,
+                phase: CommandPhase::End,
+            },
+            Control::Snapshot {
+                values: vec![(0, Value::Int(1)), (1, Value::Float(0.25))],
+            },
         ]
     }
 
@@ -376,6 +485,46 @@ mod tests {
         assert_eq!(&reject[..2], &[6, 2]);
     }
 
+    /// The frozen messages encode exactly as in protocol 1, so a 0.1 peer
+    /// still understands the version check.
+    #[test]
+    fn frozen_messages_are_byte_identical_to_protocol_1() {
+        let hello = postcard::to_allocvec(&Control::Hello {
+            protocol_version: 2,
+            plugin_version: "0.2.0".into(),
+        })
+        .unwrap();
+        assert_eq!(hello, [0, 2, 5, b'0', b'.', b'2', b'.', b'0']);
+        let reject = postcard::to_allocvec(&Control::Reject(RejectReason::VersionMismatch {
+            host_protocol_version: 2,
+            host_plugin_version: "x".into(),
+        }))
+        .unwrap();
+        assert_eq!(reject, [6, 2, 2, 1, b'x']);
+    }
+
+    #[test]
+    fn snapshot_and_systems_sizes() {
+        let values: Vec<(u16, Value)> = (0..400).map(|k| (k, Value::Float(k as f32))).collect();
+        let snapshot = encode_frame(&Control::Snapshot { values });
+        assert!(
+            snapshot.len() < 6 * 1024,
+            "snapshot is {} bytes",
+            snapshot.len()
+        );
+        // A full Systems datagram: 40 state values plus a repair slice.
+        let state: Vec<(u16, Value)> = (0..40).map(|k| (k, Value::Float(1.0))).collect();
+        let repair: Vec<(u16, Value)> = (100..200).map(|k| (k, Value::Int(k as i32))).collect();
+        let systems = Datagram::Systems {
+            epoch: 7,
+            state,
+            repair,
+        };
+        let bytes = systems.encode();
+        assert!(bytes.len() < 1000, "Systems is {} bytes", bytes.len());
+        assert_eq!(Datagram::decode(&bytes).unwrap(), systems);
+    }
+
     #[test]
     fn oversized_frame_is_rejected() {
         let mut decoder = FrameDecoder::new();
@@ -398,11 +547,11 @@ mod tests {
     }
 
     #[test]
-    fn flight_state_round_trips_and_fits_in_256_bytes() {
+    fn twin_flight_state_round_trips_and_fits_in_400_bytes() {
         let datagram = Datagram::FlightState(sample_state());
         let bytes = datagram.encode();
         assert!(
-            bytes.len() < 256,
+            bytes.len() < 400,
             "FlightState datagram is {} bytes",
             bytes.len()
         );

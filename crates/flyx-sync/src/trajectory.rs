@@ -2,7 +2,7 @@
 //! in the air, a taxi circle on the ground, and a parked aircraft. Used by
 //! `flyx-peer` and by the interpolation tests.
 
-use flyx_protocol::{FlightState, Visuals};
+use flyx_protocol::{FlightState, MAX_GEAR, MAX_INPUTS, Visuals};
 
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 const G: f64 = 9.806_65;
@@ -84,6 +84,7 @@ impl Trajectory {
             + (east / (EARTH_RADIUS_M * self.latitude_deg.to_radians().cos())).to_degrees();
 
         FlightState {
+            epoch: 0,
             seq,
             sim_time: t,
             latitude_deg: lat,
@@ -121,13 +122,24 @@ impl Trajectory {
                 rudder_deg: [0.0; 6],
                 flap_deg: [0.0; 6],
                 nosewheel_steer_deg: if self.kind == Kind::Taxi { 12.0 } else { 0.0 },
-                engine_running: true,
-                prop_speed_rad_s: match self.kind {
-                    Kind::Circuit => 251.3, // 2400 rpm
-                    Kind::Taxi => 115.2,    // 1100 rpm
-                    Kind::Parked => 83.8,   // 800 rpm
-                },
+                engine_running: [true, false, false, false, false, false, false, false],
+                prop_speed_rad_s: [
+                    match self.kind {
+                        Kind::Circuit => 251.3, // 2400 rpm
+                        Kind::Taxi => 115.2,    // 1100 rpm
+                        Kind::Parked => 83.8,   // 800 rpm
+                    },
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+                gear_deploy: [1.0; MAX_GEAR],
             },
+            controls: [0.0; MAX_INPUTS],
         }
     }
 }
@@ -194,6 +206,6 @@ mod tests {
         let a = t.state_at(0.0, 0);
         let b = t.state_at(60.0, 1);
         assert_eq!(distance(&a, &b), 0.0);
-        assert!(a.visuals.engine_running);
+        assert!(a.visuals.engine_running[0]);
     }
 }
